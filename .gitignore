@@ -1,0 +1,41 @@
+## Configuración real (con contraseña y rutas privadas)
+config.yaml
+.env
+
+## Historiales de sesión
+historial-turing/
+*.jsonl
+
+## Modelos
+*.rkllm
+
+## Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+
+## Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+## Sistema
+.DS_Store
+Thumbs.db
+
+## Logs
+*.log
+nohup.out

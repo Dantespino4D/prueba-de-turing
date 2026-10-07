@@ -1,0 +1,61 @@
+# ============================================================
+# Prueba de Turing — Configuración de ejemplo
+# Copia este archivo a config.yaml y ajusta los valores.
+# config.yaml está en .gitignore (contiene contraseñas).
+# ============================================================
+
+# --- Aplicación ---
+app:
+  host: "0.0.0.0"
+  port: 8100
+  # Ruta secreta del panel del cómplice (no enlazada desde ningún lado)
+  panel_path: "/panel-secreto"
+  # Contraseña del panel (una sola, compartida)
+  panel_password: "cambia-esto-por-algo-seguro"
+  # Clave secreta para firmar cookies de sesión (genera con: python -c "import secrets; print(secrets.token_hex(32))")
+  secret_key: "cambia-esta-clave-secreta-tambien"
+
+# --- Sesión ---
+session:
+  # Duración de la sesión en segundos (300 = 5 minutos)
+  duration_seconds: 300
+
+# --- Servidor RKLLM ---
+rkllm:
+  base_url: "http://host.containers.internal:8080"
+  timeout_seconds: 40
+  # Parámetros de generación
+  max_tokens: 200
+  temperature: 0.8
+  top_p: 0.9
+  top_k: 1
+  repeat_penalty: 1.1
+
+# --- Mock RKLLM (solo para desarrollo) ---
+mock:
+  enabled: true           # Cambia a false para usar el RKLLM real
+  port: 8080
+  min_latency_seconds: 3  # Latencia mínima simulada
+  max_latency_seconds: 10 # Latencia máxima simulada
+
+# --- Tiempos simulados de escritura humana ---
+timing:
+  # Pausa de "lectura" antes de mostrar "escribiendo..." (segundos)
+  read_delay_min: 1.0
+  read_delay_max: 3.0
+  # Velocidad de escritura simulada (caracteres por segundo)
+  typing_speed_min: 4.0
+  typing_speed_max: 6.0
+  # Tiempo mínimo total antes de entregar respuesta del humano (segundos)
+  human_min_total: 5.0
+  # Tiempo máximo de espera de respuesta del humano (segundos)
+  human_max_wait: 30.0
+
+# --- Historial ---
+history:
+  output_dir: "/mnt/disco_8TB/historial-turing"
+
+# --- Webhook opcional (n8n) ---
+webhook:
+  enabled: false
+  url: "https://n8n.example.com/webhook/turing-session"

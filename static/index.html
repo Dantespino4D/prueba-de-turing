@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chat — Prueba de Turing</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- PANTALLA: ESPERA -->
+  <div id="screen-waiting" class="screen active">
+    <div class="center-card">
+      <h1>Prueba de Turing</h1>
+      <p class="instructions">
+        Vas a chatear durante unos minutos con un interlocutor.<br>
+        Al terminar, deberás decidir si conversaste con un <strong>humano</strong>
+        o con una <strong>inteligencia artificial</strong>.<br><br>
+        Espera un momento mientras el sistema está listo…
+      </p>
+      <div class="spinner"></div>
+      <p id="waiting-msg" class="muted">Conectando…</p>
+    </div>
+  </div>
+
+  <!-- PANTALLA: CHAT -->
+  <div id="screen-chat" class="screen">
+    <div class="chat-container">
+      <header class="chat-header">
+        <span class="chat-title">Chat</span>
+        <span id="timer" class="timer">--:--</span>
+      </header>
+
+      <div id="messages" class="messages" role="log" aria-live="polite">
+        <!-- Los mensajes se insertan aquí -->
+      </div>
+
+      <!-- Indicador de escritura -->
+      <div id="typing-indicator" class="typing-indicator hidden">
+        <span></span><span></span><span></span>
+      </div>
+
+      <div class="input-row">
+        <textarea
+          id="input"
+          placeholder="Escribe tu mensaje…"
+          rows="1"
+          maxlength="1000"
+          autocomplete="off"
+        ></textarea>
+        <button id="send-btn" aria-label="Enviar">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+            <path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PANTALLA: VOTO -->
+  <div id="screen-vote" class="screen">
+    <div class="center-card">
+      <h2>Tiempo terminado</h2>
+      <p>¿Con quién estuviste hablando?</p>
+      <div class="vote-buttons">
+        <button class="vote-btn" data-answer="humano">👤 Humano</button>
+        <button class="vote-btn" data-answer="ia">🤖 Inteligencia Artificial</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PANTALLA: RESULTADO -->
+  <div id="screen-result" class="screen">
+    <div class="center-card result-card">
+      <div id="result-icon" class="result-icon"></div>
+      <h2 id="result-title"></h2>
+      <p id="result-detail"></p>
+      <details>
+        <summary>Ver transcripción completa</summary>
+        <div id="transcript" class="transcript"></div>
+      </details>
+    </div>
+  </div>
+
+  <script src="/static/professor.js"></script>
+</body>
+</html>

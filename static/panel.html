@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Panel — Prueba de Turing</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="panel-layout">
+
+    <!-- ===================== BARRA LATERAL ===================== -->
+    <aside class="panel-sidebar">
+      <div>
+        <div class="section-title">Estado del sistema</div>
+        <div class="status-row"><div id="dot-panel" class="dot red"></div><span id="lbl-panel">Panel: desconectado</span></div>
+        <div class="status-row"><div id="dot-model" class="dot red"></div><span id="lbl-model">Modelo: no disponible</span></div>
+        <div class="status-row"><div id="dot-professor" class="dot red"></div><span id="lbl-professor">Profesor: desconectado</span></div>
+      </div>
+
+      <div>
+        <div class="section-title">Sesión</div>
+        <div id="session-info" style="font-size:0.8rem;color:var(--text-muted);">Sin sesión activa</div>
+        <div id="panel-timer" style="font-size:1.1rem;font-weight:600;color:var(--accent2);margin-top:0.25rem;">--:--</div>
+      </div>
+
+      <div>
+        <div class="section-title">Rol de esta sesión</div>
+        <div id="role-badge" class="badge neutral">—</div>
+        <div id="round-indicator" style="margin-top:0.5rem;font-size:0.85rem;color:var(--text-muted);"></div>
+      </div>
+
+      <div>
+        <div class="section-title">Modo al iniciar</div>
+        <select id="mode-select">
+          <option value="aleatorio">Aleatorio (50/50)</option>
+          <option value="ia">Forzar IA</option>
+          <option value="humano">Forzar Humano</option>
+        </select>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:0.4rem;">
+        <button class="panel-btn primary" id="btn-start">▶ Iniciar sesión</button>
+        <button class="panel-btn" id="btn-reset">↺ Reiniciar sesión</button>
+        <button class="panel-btn" id="btn-test-model">🔬 Probar modelo</button>
+        <div id="test-model-result" style="font-size:0.8rem;color:var(--text-muted);"></div>
+      </div>
+    </aside>
+
+    <!-- ===================== ÁREA PRINCIPAL ===================== -->
+    <main class="panel-main">
+      <div class="chat-container" style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
+        <header class="chat-header">
+          <span class="chat-title">Conversación</span>
+          <span id="panel-clock" class="timer">--:--</span>
+        </header>
+
+        <div id="panel-messages" class="messages" role="log"></div>
+
+        <div id="panel-typing" class="typing-indicator hidden">
+          <span></span><span></span><span></span>
+        </div>
+
+        <!-- Panel de respuesta del cómplice (visible cuando es su turno) -->
+        <div id="response-area" class="input-row" style="display:none;flex-direction:column;gap:0.5rem;">
+          <div style="display:flex;gap:0.5rem;align-items:flex-end;">
+            <textarea
+              id="panel-input"
+              placeholder="Tu respuesta…"
+              rows="1"
+              maxlength="1000"
+              autocomplete="off"
+            ></textarea>
+            <button id="panel-send-btn" aria-label="Enviar">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                <path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/>
+              </svg>
+            </button>
+          </div>
+          <div style="display:flex;gap:0.5rem;align-items:center;">
+            <button class="panel-btn danger" id="btn-take-control" style="width:auto;padding:0.4rem 0.8rem;">
+              🎯 Tomar control
+            </button>
+            <span id="typing-target-lbl" class="typing-target"></span>
+          </div>
+        </div>
+
+        <!-- Estado "esperando IA" visible cuando la IA responde -->
+        <div id="ai-waiting-area" class="input-row" style="display:none;justify-content:center;color:var(--text-muted);font-size:0.85rem;">
+          <span>⏳ La IA está generando respuesta…</span>
+          <button class="panel-btn" id="btn-override" style="width:auto;margin-left:1rem;padding:0.3rem 0.7rem;">
+            Tomar control ahora
+          </button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modal de toma de control cuando la IA está generando -->
+  <div id="takeover-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center;">
+    <div class="center-card" style="max-width:420px;text-align:left;">
+      <h3 style="margin-bottom:0.75rem;">Tomar control — responde tú</h3>
+      <textarea
+        id="takeover-input"
+        placeholder="Tu respuesta (irá al profesor en lugar de la IA)…"
+        rows="4"
+        maxlength="1000"
+        style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:0.6rem;font:inherit;resize:vertical;"
+      ></textarea>
+      <div style="display:flex;gap:0.75rem;margin-top:0.75rem;">
+        <button class="panel-btn primary" id="takeover-confirm" style="flex:1;">Enviar</button>
+        <button class="panel-btn" id="takeover-cancel" style="flex:1;">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/panel.js"></script>
+</body>
+</html>
