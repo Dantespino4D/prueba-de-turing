@@ -1,13 +1,27 @@
 """
-app/rkllm_client.py — Cliente async para el servidor RKLLM.
+app/rkllm_client.py — Cliente async para el servidor RKLLM real.
 
-El servidor RKLLM expone una API compatible con OpenAI:
-  POST /v1/chat/completions
-  GET  /v1/models
+El servidor RKLLM (flask_server.py) expone una API compatible con OpenAI:
+  GET  /v1/models              → lista el modelo cargado
+  POST /v1/chat/completions    → inferencia (stream o no-stream)
 
-Usamos el modo NO-streaming (stream=false) porque:
-  1. El modelo maneja una petición a la vez.
-  2. La app aplica su propio retraso de escritura antes de entregar al profesor.
+Formato del payload (confirmado en flask_server.py y chat_api_flask.py):
+  {
+    "model": "<nombre>",
+    "messages": [{"role": "...", "content": "..."}],
+    "stream": false,
+    "temperature": 0.8,
+    "top_p": 0.9,
+    "top_k": 1,
+    "max_tokens": 200,
+    "repeat_penalty": 1.1,
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0,
+    "enable_thinking": false
+  }
+
+El servidor maneja UNA petición a la vez y devuelve HTTP 503 si está ocupado.
+Usamos stream=false porque la app aplica su propio retraso de escritura.
 
 Filtrado de bloques <think>...</think> que emiten algunos modelos (Qwen2.5).
 """
@@ -36,9 +50,10 @@ class RkllmClient:
     Cliente async para el servidor RKLLM (OpenAI-compatible).
 
     Maneja:
-    - Ping de disponibilidad (TCP + HTTP)
-    - Inferencia completa (no streaming)
+    - Ping de disponibilidad (TCP + HTTP GET /v1/models)
+    - Inferencia completa (no streaming, POST /v1/chat/completions)
     - Filtrado de bloques <think>
+    - Error 503 cuando el servidor está ocupado
     """
 
     def __init__(self):
@@ -48,6 +63,7 @@ class RkllmClient:
         self._lock = asyncio.Lock()
 
     def _build_headers(self) -> dict:
+        # Header confirmado en chat_api_flask.py
         return {
             "Content-Type": "application/json",
             "Authorization": "not_required",
@@ -72,7 +88,7 @@ class RkllmClient:
                 None, lambda: socket.create_connection((host, port), timeout=3)
             )
 
-            # Confirma con HTTP
+            # Confirma con HTTP GET /v1/models (endpoint confirmado en flask_server.py)
             async with httpx.AsyncClient(timeout=5) as client:
                 r = await client.get(f"{self._base_url}/v1/models")
                 return r.status_code == 200
@@ -85,20 +101,24 @@ class RkllmClient:
         Solo para el botón "probar modelo" del panel.
         """
         messages = [{"role": "user", "content": prompt}]
-        return await self.chat(messages, max_tokens=30)
+        result = await self.chat(messages, max_tokens=30)
+        return result
 
     async def chat(
         self,
         messages: list[dict],
         system_prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
-    ) -> Optional[str]:
+    ) -> Optional[tuple]:
         """
-        Envía un historial al modelo y devuelve la respuesta completa.
+        Envía un historial al modelo y devuelve (respuesta, elapsed_seconds).
 
         Antepone el system prompt si se provee.
         Filtra bloques <think> de la respuesta.
-        Retorna None si hay error o timeout.
+        Retorna (None, 0.0) si hay error, timeout o servidor ocupado.
+
+        El servidor RKLLM devuelve 503 cuando está procesando otra petición.
+        El lock local evita que esto ocurra en condiciones normales.
         """
         async with self._lock:
             full_messages = []
@@ -107,6 +127,7 @@ class RkllmClient:
                 full_messages.append({"role": "system", "content": sp})
             full_messages.extend(messages)
 
+            # Payload confirmado con flask_server.py y chat_api_flask.py
             payload = {
                 "model": "rkllm",
                 "messages": full_messages,
@@ -116,7 +137,9 @@ class RkllmClient:
                 "top_k": config.rkllm.top_k,
                 "max_tokens": max_tokens or config.rkllm.max_tokens,
                 "repeat_penalty": config.rkllm.repeat_penalty,
-                "enable_thinking": False,
+                "frequency_penalty": 0.0,
+                "presence_penalty": 0.0,
+                "enable_thinking": False,  # Filtramos <think> nosotros de todas formas
             }
 
             try:
@@ -128,14 +151,21 @@ class RkllmClient:
                         headers=self._build_headers(),
                     )
                     elapsed = time.monotonic() - t0
+
+                    if r.status_code == 503:
+                        # El servidor RKLLM está ocupado con otra petición
+                        print("[rkllm] Servidor ocupado (503). Reintentar más tarde.")
+                        return None, 0.0
+
                     r.raise_for_status()
                     data = r.json()
                     raw = data["choices"][0]["message"]["content"]
                     cleaned = strip_think_blocks(raw)
                     print(f"[rkllm] Respuesta en {elapsed:.1f}s: {cleaned[:80]!r}")
                     return cleaned, elapsed
+
             except httpx.TimeoutException:
-                print("[rkllm] Timeout esperando respuesta del modelo.")
+                print(f"[rkllm] Timeout ({self._timeout}s) esperando respuesta del modelo.")
                 return None, 0.0
             except Exception as e:
                 print(f"[rkllm] Error: {e}")

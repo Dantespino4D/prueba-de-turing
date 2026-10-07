@@ -96,9 +96,12 @@ class SessionManager:
         self.panel_ready: bool = False
         # Modelo listo (resultado del último ping)
         self.model_ready: bool = False
-        # Evento que el cómplice señala cuando envía una respuesta
+        # Evento que el cómplice señala cuando envía una respuesta (ronda humana)
         self._human_response_event: Optional[asyncio.Event] = None
         self._human_response_text: Optional[str] = None
+        # Evento directo de takeover (ronda IA interceptada por el cómplice)
+        self._takeover_event: asyncio.Event = asyncio.Event()
+        self._takeover_text: Optional[str] = None
         # Semáforo: solo un informe al modelo a la vez
         self._model_lock = asyncio.Lock()
 
@@ -124,6 +127,9 @@ class SessionManager:
             )
             self._human_response_event = None
             self._human_response_text = None
+            # Reiniciar el evento de takeover para la nueva sesión
+            self._takeover_event.clear()
+            self._takeover_text = None
             return self._session
 
     async def start_session(self) -> bool:
@@ -184,8 +190,15 @@ class SessionManager:
     async def take_control(self, text: str):
         """
         El cómplice toma el control de esta ronda:
-        equivale a entregar una respuesta humana aunque el rol sea IA.
+        dispara el evento directo de takeover (para rondas de IA)
+        y también señala el evento de respuesta humana como respaldo.
         """
+        print(f"[take_control] Recibido: {text!r}")
+        async with self._lock:
+            self._takeover_text = text
+            self._takeover_event.set()
+        print("[take_control] Evento disparado")
+        # Respaldo: también señala el canal de respuesta humana
         await self.deliver_human_response(text)
 
     async def reset_session(self):
@@ -194,6 +207,8 @@ class SessionManager:
             self._session = None
             self._human_response_event = None
             self._human_response_text = None
+            self._takeover_event.clear()
+            self._takeover_text = None
 
     async def save_history(self):
         """Guarda el historial de la sesión activa en un archivo JSON."""

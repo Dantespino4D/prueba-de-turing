@@ -288,6 +288,9 @@ async def _handle_professor_message(ws: WebSocket, content: str):
     responder = sess.responder
 
     if responder == "ia":
+        # Avisar al panel que es turno de la IA (para mostrar botón "tomar control")
+        if session_manager.panel_ws:
+            await _send(session_manager.panel_ws, {"type": "ai_turn"})
         await _respond_as_ai(ws, sess)
     else:
         await _respond_as_human(ws, sess)
@@ -312,7 +315,11 @@ async def _respond_as_ai(ws: WebSocket, sess):
 
     t0 = time.monotonic()
 
-    # Evento para que el cómplice pueda tomar control
+    # Reiniciar el evento directo de takeover antes de lanzar la inferencia
+    session_manager._takeover_event.clear()
+    session_manager._takeover_text = None
+
+    # Evento de respaldo via parche de deliver_human_response
     take_control_event = asyncio.Event()
     _pending_takeover: list[str] = []
 
@@ -330,18 +337,34 @@ async def _respond_as_ai(ws: WebSocket, sess):
         rkllm_client.chat(history, system_prompt=config.system_prompt)
     )
 
+    # Espera directa del evento de takeover (mecanismo principal)
+    async def wait_takeover_direct():
+        await session_manager._takeover_event.wait()
+
     done, _ = await asyncio.wait(
-        [ai_task, asyncio.create_task(take_control_event.wait())],
+        [
+            ai_task,
+            asyncio.create_task(take_control_event.wait()),
+            asyncio.create_task(wait_takeover_direct()),
+        ],
         return_when=asyncio.FIRST_COMPLETED,
     )
 
     # Restaurar función original
     session_manager.deliver_human_response = original_deliver
 
-    if take_control_event.is_set() and _pending_takeover:
+    # Comprobar takeover por cualquiera de las dos vías
+    takeover_text = None
+    if session_manager._takeover_event.is_set() and session_manager._takeover_text:
+        takeover_text = session_manager._takeover_text
+        print(f"[respond_as_ai] Takeover directo detectado: {takeover_text!r}")
+    elif take_control_event.is_set() and _pending_takeover:
+        takeover_text = _pending_takeover[0]
+        print(f"[respond_as_ai] Takeover via parche detectado: {takeover_text!r}")
+
+    if takeover_text is not None:
         # El cómplice tomó el control: cancelar la IA y usar su respuesta
         ai_task.cancel()
-        takeover_text = _pending_takeover[0]
         elapsed = time.monotonic() - t0
         extra = human_response_delay(takeover_text, elapsed)
         if extra > 0:
@@ -357,7 +380,7 @@ async def _respond_as_ai(ws: WebSocket, sess):
 
     if ai_text is None:
         # Error en el modelo
-        await _send(ws, {"type": "typing", "state": False})
+        await _send(session_manager.professor_ws, {"type": "typing", "state": False})
         if session_manager.panel_ws:
             await _send(session_manager.panel_ws, {
                 "type": "error",
@@ -414,14 +437,14 @@ async def _respond_as_human(ws: WebSocket, sess):
 
 async def _deliver_response(ws: WebSocket, text: str, sess):
     """Apaga el indicador de escritura y entrega el mensaje al profesor."""
-    await _send(ws, {"type": "typing", "state": False})
+    await _send(session_manager.professor_ws, {"type": "typing", "state": False})
     if session_manager.panel_ws:
         await _send(session_manager.panel_ws, {"type": "typing", "state": False})
 
     await session_manager.add_message("interlocutor", text)
 
     # Enviar al profesor
-    await _send(ws, {"type": "message", "role": "interlocutor", "content": text})
+    await _send(session_manager.professor_ws, {"type": "message", "role": "interlocutor", "content": text})
 
     # Enviar también al panel (para que el cómplice vea la conversación completa)
     if session_manager.panel_ws:

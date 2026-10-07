@@ -21,10 +21,17 @@ session:
   duration_seconds: 300
 
 # --- Servidor RKLLM ---
+# El servidor Flask (flask_server.py) corre en el host en el puerto 8080 por defecto.
+# Desde el contenedor Podman usa "http://host.containers.internal:8080".
+# Desde el host directamente usa "http://localhost:8080".
+# IMPORTANTE: el servidor carga un solo modelo al arrancar. Para cambiar de modelo
+# hay que reiniciar el servicio (sudo systemctl restart rkllm-server).
 rkllm:
   base_url: "http://host.containers.internal:8080"
+  # Timeout de inferencia en segundos. El modelo puede tardar 30-40 s en responder
+  # dependiendo del modelo y la longitud de la respuesta.
   timeout_seconds: 40
-  # Parámetros de generación
+  # Parámetros de generación (se pasan directamente a flask_server.py)
   max_tokens: 200
   temperature: 0.8
   top_p: 0.9
@@ -33,7 +40,7 @@ rkllm:
 
 # --- Mock RKLLM (solo para desarrollo) ---
 mock:
-  enabled: true           # Cambia a false para usar el RKLLM real
+  enabled: false          # true para desarrollo sin NPU; false para usar el RKLLM real
   port: 8080
   min_latency_seconds: 3  # Latencia mínima simulada
   max_latency_seconds: 10 # Latencia máxima simulada

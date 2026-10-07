@@ -111,6 +111,23 @@ function setRole(role) {
   }
 }
 
+// --- Visibilidad del botón "Tomar el control" ---
+function updateControlButtonVisibility(role) {
+  if (role === "ia") {
+    // La IA está respondiendo: el cómplice puede interceptarla
+    btnTakeControl.style.display = "inline-block";
+    roundIndicator.textContent = "🤖 La IA está respondiendo… (puedes tomar el control)";
+  } else if (role === "humano") {
+    // El cómplice ya tiene el control: ocultar el botón
+    btnTakeControl.style.display = "none";
+    roundIndicator.textContent = "🟢 Te toca a ti responder";
+  } else {
+    // Estado neutro: ocultar el botón y resetear indicador
+    btnTakeControl.style.display = "none";
+    roundIndicator.textContent = "Esperando mensaje del profesor…";
+  }
+}
+
 // --- Mensajes del chat ---
 function appendMessage(role, content, tag) {
   const bubble = document.createElement("div");
@@ -238,10 +255,22 @@ function handleMessage(msg) {
       break;
     }
 
+    case "ai_turn": {
+      // La IA va a responder: mostrar botón "tomar control"
+      updateControlButtonVisibility("ia");
+      showAiWaiting(true);
+      break;
+    }
+
     case "message": {
       const isAiResponse = msg.role === "interlocutor" && currentRole === "ia";
       const tag = isAiResponse ? "(IA)" : null;
       appendMessage(msg.role, msg.content, tag);
+
+      // Mensaje del profesor: resetear estado del botón "tomar control"
+      if (msg.role === "profesor") {
+        updateControlButtonVisibility("neutral");
+      }
 
       // Si era turno humano y llega la respuesta del interlocutor → cerrar área
       if (msg.role === "interlocutor") {
@@ -259,7 +288,7 @@ function handleMessage(msg) {
 
     case "your_turn": {
       // El servidor indica que es el turno del cómplice (ronda humana)
-      roundIndicator.textContent = "🟢 Te toca a ti";
+      updateControlButtonVisibility("humano");
       if (msg.typing_target) {
         typingTargetLbl.textContent = `Ritmo objetivo: ~${msg.typing_target.toFixed(1)} car/s`;
       }
@@ -417,4 +446,7 @@ function scheduleReconnect() {
 }
 
 // --- Arrancar ---
+// Botón "tomar control" oculto por defecto; se muestra solo en rondas de IA
+btnTakeControl.style.display = "none";
+
 connect();

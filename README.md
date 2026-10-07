@@ -136,10 +136,40 @@ que comienzan con `#` son comentarios y se ignoran.
 
 ## Fase 2 — Integración con el servidor RKLLM real
 
+### API del servidor RKLLM (flask_server.py)
+
+El servidor expone una API compatible con OpenAI en el puerto **8080** (por defecto):
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| `GET`  | `/v1/models` | Lista el modelo cargado (usado para ping de disponibilidad) |
+| `POST` | `/v1/chat/completions` | Inferencia. Acepta `stream: true/false`. Devuelve **503** si está ocupado. |
+
+Campos del payload relevantes (confirmados en `flask_server.py`):
+
+```json
+{
+  "model": "rkllm",
+  "messages": [{"role": "user", "content": "..."}],
+  "stream": false,
+  "temperature": 0.8,
+  "top_p": 0.9,
+  "top_k": 1,
+  "max_tokens": 200,
+  "repeat_penalty": 1.1,
+  "frequency_penalty": 0.0,
+  "presence_penalty": 0.0,
+  "enable_thinking": false
+}
+```
+
+El servidor **maneja una sola petición a la vez** (lock interno + `threaded=False`).
+La app ya tiene su propio `asyncio.Lock` para garantizarlo.
+
 ### Preparar el servidor RKLLM en el host
 
 El servidor Flask del demo carga **un solo modelo al arrancar**. Para cambiar
-de modelo hay que **reiniciar el servicio**.
+de modelo hay que **reiniciar el servicio** (`sudo systemctl restart rkllm-server`).
 
 ```bash
 # 1. Construir la librería nativa (si aún no existe lib/librkllmrt.so)
