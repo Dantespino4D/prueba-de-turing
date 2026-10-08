@@ -1,31 +1,32 @@
 FROM python:3.12-slim
 
-LABEL maintainer="dante"
-LABEL description="Prueba de Turing — FastAPI app"
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    TURING_CONFIG=/config/config.yaml
+
+# Usuario no-root con UID 1000, compatible con UserNS=keep-id (Podman rootless).
+# Con keep-id el host mapea su propio UID al mismo UID dentro del contenedor,
+# por lo que UID 1000 aqui == UID 1000 de "dante" en el host == dueno de /data.
+RUN groupadd --gid 1000 turing && \
+    useradd --uid 1000 --gid 1000 --no-create-home --shell /sbin/nologin turing
 
 WORKDIR /app
 
-# Instalar dependencias del sistema (necesarias para httpx y uvicorn)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copiar requirements e instalar
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# tzdata: por si la imagen no trae zonas horarias (el historial usa America/Mexico_City)
+RUN pip install --no-cache-dir -r requirements.txt tzdata
 
-# Copiar código fuente
-COPY app/        ./app/
-COPY static/     ./static/
-COPY system_prompt.txt .
+COPY app/ ./app/
+COPY static/ ./static/
+COPY mock_rkllm/ ./mock_rkllm/
+COPY system_prompt.txt ./system_prompt.txt
 
-# El archivo config.yaml se monta como volumen en producción.
-# Si no existe, se usan los valores por defecto (útil para desarrollo).
+# Ceder /app al usuario no-root antes de cambiar de usuario
+RUN chown -R turing:turing /app
 
-# El directorio de historial se monta desde el host.
-# RUN mkdir -p /mnt/disco_8TB/historial-turing  ← lo crea el host o el volumen
+USER turing
 
 EXPOSE 8100
 
-# Arrancar con uvicorn
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8100", "--log-level", "info"]
+# Sin --reload: esto es producción.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8100"]

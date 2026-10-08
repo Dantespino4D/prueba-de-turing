@@ -300,7 +300,7 @@ systemctl --user enable --now prueba-turing
 
 **Domain Names:** `turing.dantespino4d.me`  
 **Scheme:** `http`  
-**Forward Hostname / IP:** `localhost` (o la IP del host si NPM corre en otro contenedor)  
+**Forward Hostname / IP:** `192.168.1.100` (**NO** `localhost` — NPM corre en un contenedor Docker y no llega al host por localhost)  
 **Forward Port:** `8100`  
 **Cache Assets:** OFF  
 **Block Common Exploits:** ON  
@@ -320,6 +320,9 @@ proxy_connect_timeout  10s;
 
 # Sin buffering: los mensajes WebSocket llegan en tiempo real
 proxy_buffering off;
+
+# Evitar indexación por buscadores
+add_header X-Robots-Tag "noindex, nofollow" always;
 
 # Cabeceras necesarias para WebSocket
 proxy_http_version 1.1;

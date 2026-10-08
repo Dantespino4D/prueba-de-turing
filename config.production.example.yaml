@@ -1,0 +1,58 @@
+# ============================================================
+# Prueba de Turing — Config de PRODUCCION (contenedor Podman)
+# Copiar a config.production.yaml, cambiar los valores marcados
+# con CAMBIAR y NO subir ese archivo a git.
+# ============================================================
+
+app:
+  host: "0.0.0.0"
+  port: 8100
+  # CAMBIAR: ruta oculta del panel (genera una con: python -c "import secrets; print('/p-' + secrets.token_urlsafe(8))")
+  panel_path: "/panel-secreto"
+  # CAMBIAR: contraseña larga (varias palabras)
+  panel_password: "cambia-esto-por-algo-largo-y-seguro"
+  # CAMBIAR: python -c "import secrets; print(secrets.token_hex(32))"
+  secret_key: "cambia-esta-clave-secreta-tambien"
+
+session:
+  duration_seconds: 300
+
+# El servidor RKLLM corre en el host (puerto 8085).
+rkllm:
+  base_url: "http://host.containers.internal:8085"
+  # No subir de 40: un profesor no espera minutos a un "humano".
+  timeout_seconds: 40
+  # Respuestas cortas: el 8B va a pocos tokens/s en la NPU.
+  max_tokens: 70
+  temperature: 0.8
+  top_p: 0.9
+  # top_k: 1 hace al modelo determinista (misma respuesta a la misma pregunta). Mejor 40.
+  top_k: 40
+  repeat_penalty: 1.1
+
+# Solo para desarrollo; en producción no se usa.
+mock:
+  port: 8081
+  min_latency_seconds: 3
+  max_latency_seconds: 10
+
+timing:
+  read_delay_min: 1.0
+  read_delay_max: 3.0
+  typing_speed_min: 4.0
+  typing_speed_max: 6.0
+  human_min_total: 5.0
+  human_max_wait: 30.0
+  # "none" = mensaje genérico; "ia" = el modelo responde si el cómplice no contesta.
+  human_timeout_fallback: "none"
+  generic_typing_extra_seconds: 5.0
+  # CAMBIAR cuando exista el personaje: debe sonar como el cómplice.
+  generic_timeout_message: "Interesante pregunta, déjame pensar un momento más..."
+
+history:
+  # Ruta DENTRO del contenedor (el volumen la conecta con el NAS)
+  output_dir: "/data"
+
+webhook:
+  enabled: false
+  url: "https://n8n.example.com/webhook/turing-session"

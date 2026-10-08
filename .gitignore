@@ -39,3 +39,6 @@ Thumbs.db
 ## Logs
 *.log
 nohup.out
+config.production.yaml
+*.bak
+fase3.tar.gz

@@ -1,0 +1,37 @@
+# Quadlet rootless. Copiar a: ~/.config/containers/systemd/turing.container
+# Genera el servicio de usuario "turing.service".
+
+[Unit]
+Description=Prueba de Turing (FastAPI)
+
+[Container]
+Image=localhost/turing:latest
+ContainerName=turing
+PublishPort=8100:8100
+
+# keep-id: el contenedor corre con el mismo UID que "dante", asi puede escribir
+# en el NAS sin cambiar el dueno de la carpeta (NO usar :U sobre el NAS).
+UserNS=keep-id
+
+Environment=TURING_CONFIG=/config/config.yaml
+
+# Config real (con contraseñas), solo lectura
+Volume=/home/dante/prueba-turing/config.production.yaml:/config/config.yaml:ro
+# Personaje / system prompt: editable sin reconstruir la imagen
+Volume=/home/dante/prueba-turing/system_prompt.txt:/app/system_prompt.txt:ro
+# Historiales en el NAS
+Volume=/mnt/disco_8TB/historial-turing:/data
+
+HealthCmd=python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/', timeout=3)"
+HealthInterval=30s
+HealthRetries=3
+
+[Service]
+Restart=always
+RestartSec=5
+# Espera a que el modelo termine de cargar (hasta ~6 min) antes de arrancar la app
+ExecStartPre=/home/dante/prueba-turing/esperar-rkllm.sh
+TimeoutStartSec=420
+
+[Install]
+WantedBy=default.target

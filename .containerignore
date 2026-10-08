@@ -1,0 +1,15 @@
+venv/
+.git/
+__pycache__/
+*.pyc
+*.md
+*.tar.gz
+*.rkllm
+*.bak
+config.yaml
+config.production.yaml
+config.example.yaml
+config.production.example.yaml
+turing.container
+rkllm-server.service
+esperar-rkllm.sh
