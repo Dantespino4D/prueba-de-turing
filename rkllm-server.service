@@ -7,8 +7,13 @@ Type=simple
 User=dante
 WorkingDirectory=/home/dante/rknn-llm/examples/rkllm_server_demo/rkllm_server
 
-# Para cambiar de modelo: editar MODEL_PATH y reiniciar el servicio.
+# Para cambiar de modelo: descomentar UNO y comentar los demás, luego:
+#   sudo systemctl daemon-reload && sudo systemctl restart rkllm-server
 Environment="MODEL_PATH=/home/dante/jarvis/llama3.1-supernova-instruct-merge-ab.rkllm"
+# Environment="MODEL_PATH=/home/dante/jarvis/qwen2.5-7b-coder-rk3588-UC.rkllm"
+# Environment="MODEL_PATH=/home/dante/jarvis/qwen2.5-3b-distill.rkllm"
+# Environment="MODEL_PATH=/home/dante/jarvis/qwen2.5-3b-josiefied.rkllm"
+# Environment="MODEL_PATH=/home/dante/jarvis/qwen2.5-1.5B-agentic-trace.rkllm"
 Environment="LD_LIBRARY_PATH=/home/dante/rknn-llm/examples/rkllm_server_demo/rkllm_server/lib"
 Environment="PYTHONUNBUFFERED=1"
 
