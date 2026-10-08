@@ -38,8 +38,7 @@ class RkllmConfig:
 
 @dataclass
 class MockConfig:
-    enabled: bool = True
-    port: int = 9099
+    port: int = 8081
     min_latency_seconds: float = 3.0
     max_latency_seconds: float = 10.0
 
@@ -52,6 +51,15 @@ class TimingConfig:
     typing_speed_max: float = 6.0
     human_min_total: float = 5.0
     human_max_wait: float = 30.0
+    # A2: qué hace el servidor cuando el cómplice no responde a tiempo
+    # "none" → muestra "escribiendo..." hasta generic_typing_extra_seconds y luego
+    #           envía generic_timeout_message (el profesor nunca ve silencio ni error).
+    # "ia"   → el modelo responde automáticamente (source = "ia_fallback").
+    human_timeout_fallback: str = "none"
+    # Segundos adicionales de "escribiendo..." antes de entregar el mensaje genérico (modo none)
+    generic_typing_extra_seconds: float = 5.0
+    # Mensaje genérico que recibe el profesor cuando se agota el tiempo y fallback=none
+    generic_timeout_message: str = "Interesante pregunta, déjame pensar un momento más..."
 
 
 @dataclass
@@ -89,14 +97,18 @@ def _merge(dataclass_obj, data: dict):
 def load_config(path: str | None = None) -> Config:
     """
     Carga config.yaml (o el archivo indicado).
-    Si no existe, usa valores por defecto (útil en desarrollo).
+    La ruta se resuelve en este orden:
+      1. El argumento ``path`` si se pasa explícitamente.
+      2. La variable de entorno ``TURING_CONFIG`` si está definida.
+      3. ``config.yaml`` en el directorio de trabajo actual como respaldo.
+    Si el archivo no existe, usa valores por defecto (útil en desarrollo).
     Siempre carga system_prompt.txt si existe.
     """
     config = Config()
 
     # Buscar archivo de configuración
     if path is None:
-        path = str(BASE_DIR / "config.yaml")
+        path = os.environ.get("TURING_CONFIG", str(BASE_DIR / "config.yaml"))
 
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:

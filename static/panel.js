@@ -4,6 +4,12 @@
  * Recupera sesión activa al reconectar (historial, rol, tiempo).
  * Muestra indicador de turno, modo forzado, botón "tomar control".
  * Funciona bien en móvil.
+ *
+ * A3: Cuando llega un mensaje del profesor durante una ronda activa:
+ *   - Sonido corto (beep generado con Web Audio API, sin archivos externos).
+ *   - Título de la pestaña parpadea con "🔔 Mensaje del profesor — Panel".
+ *   - Ambos se silencian con el botón 🔔/🔕 del encabezado del chat.
+ *   - El parpadeo se detiene al hacer foco en la pestaña.
  */
 
 "use strict";
@@ -56,6 +62,74 @@ const takeoverInput = document.getElementById("takeover-input");
 const takeoverConfirm = document.getElementById("takeover-confirm");
 const takeoverCancel  = document.getElementById("takeover-cancel");
 const modeSelect    = document.getElementById("mode-select");
+const btnMuteNotify = document.getElementById("btn-mute-notify");
+
+// ─── A3: Notificaciones de mensaje del profesor ───────────────────────────────
+
+let _notifyMuted = false;
+let _titleBlinkInterval = null;
+const _originalTitle = document.title;
+
+/** Reproduce un beep corto mediante Web Audio API. */
+function _playBeep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880;        // La5 — tono suave y audible
+    gain.gain.setValueAtTime(0.18, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.18);
+  } catch (_) {
+    // Web Audio no disponible; ignorar
+  }
+}
+
+/** Inicia el parpadeo del título de la pestaña. */
+function _startTitleBlink() {
+  if (_titleBlinkInterval) return;  // ya parpadeando
+  let visible = true;
+  _titleBlinkInterval = setInterval(() => {
+    document.title = visible ? "🔔 Mensaje — Panel" : _originalTitle;
+    visible = !visible;
+  }, 700);
+}
+
+/** Detiene el parpadeo y restaura el título original. */
+function _stopTitleBlink() {
+  if (_titleBlinkInterval) {
+    clearInterval(_titleBlinkInterval);
+    _titleBlinkInterval = null;
+  }
+  document.title = _originalTitle;
+}
+
+/** Lanza la notificación (sonido + parpadeo) si no está silenciada. */
+function _notifyProfessorMessage() {
+  if (_notifyMuted) return;
+  _playBeep();
+  _startTitleBlink();
+}
+
+// Detener parpadeo al volver a la pestaña
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) _stopTitleBlink();
+});
+window.addEventListener("focus", _stopTitleBlink);
+
+// Botón de silenciar / activar notificaciones
+btnMuteNotify.addEventListener("click", () => {
+  _notifyMuted = !_notifyMuted;
+  btnMuteNotify.textContent = _notifyMuted ? "🔕" : "🔔";
+  btnMuteNotify.title = _notifyMuted ? "Activar notificaciones" : "Silenciar notificaciones";
+  if (_notifyMuted) _stopTitleBlink();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // --- Temporizador ---
 function startTimer(seconds) {
@@ -89,7 +163,11 @@ function setDot(dot, lbl, ok, text) {
 
 function updatePanelStatus(data) {
   setDot(dotPanel, lblPanel, true, "Panel: conectado");
-  setDot(dotModel, lblModel, data.model_ready, `Modelo: ${data.model_ready ? "disponible" : "no disponible"}`);
+  let modelLabel = `Modelo: ${data.model_ready ? "disponible" : "no disponible"}`;
+  if (data.model_ready && data.model_id) {
+    modelLabel += ` (${data.model_id})`;
+  }
+  setDot(dotModel, lblModel, data.model_ready, modelLabel);
 }
 
 function updateProfessorStatus(connected) {
@@ -276,8 +354,9 @@ function handleMessage(msg) {
       const tag = isAiResponse ? "(IA)" : null;
       appendMessage(msg.role, msg.content, tag);
 
-      // Mensaje del profesor: resetear estado del botón "tomar control"
+      // A3: Notificar al cómplice cuando llega un mensaje del profesor
       if (msg.role === "profesor") {
+        _notifyProfessorMessage();
         updateControlButtonVisibility("neutral");
       }
 
@@ -331,6 +410,15 @@ function handleMessage(msg) {
       hideInputAreas();
       roundIndicator.textContent = "";
       sessionInfo.textContent = "Sesión reiniciada";
+      break;
+    }
+
+    case "model_busy": {
+      // Fix 7: indicar al cómplice si el modelo está ocupado con una inferencia
+      const busyEl = document.getElementById("model-busy-indicator");
+      if (busyEl) {
+        busyEl.style.display = msg.busy ? "block" : "none";
+      }
       break;
     }
 

@@ -136,6 +136,9 @@ function showResult(data) {
   });
 }
 
+// --- Fix 5: flag que indica que estamos recibiendo el historial al reconectar ---
+let _receivingHistory = false;
+
 // --- Manejar mensajes del servidor ---
 function handleMessage(msg) {
   switch (msg.type) {
@@ -148,11 +151,33 @@ function handleMessage(msg) {
       break;
     }
 
+    // Fix 5: el servidor anuncia el inicio del historial al reconectar.
+    // Limpiamos el chat aquí, ANTES de recibir los mensajes, para evitar duplicados.
+    case "history_start": {
+      messagesEl.innerHTML = "";
+      typingEl.classList.add("hidden");
+      setInputEnabled(false);
+      _receivingHistory = true;
+      break;
+    }
+
+    case "history_end": {
+      _receivingHistory = false;
+      // Al terminar el historial, si la sesión sigue activa y no hay
+      // respuesta pendiente del interlocutor, habilitamos el input.
+      // El servidor enviará "input_enabled" si hay que habilitarlo.
+      break;
+    }
+
     case "status": {
       const state = msg.state;
       if (state === "active") {
         showScreen("chat");
-        setInputEnabled(true);
+        // Solo habilitar input si NO estamos en mitad de un historial de reconexión
+        // (el input_enabled lo habilita tras el último mensaje del interlocutor)
+        if (!_receivingHistory) {
+          setInputEnabled(true);
+        }
         startTimer(msg.remaining);
       } else if (state === "voting") {
         stopTimer();
@@ -173,12 +198,23 @@ function handleMessage(msg) {
     }
 
     case "message": {
-      if (currentScreen === "chat") {
+      if (currentScreen === "chat" || _receivingHistory) {
+        // Asegurarse de estar en la pantalla de chat durante la reproducción del historial
+        if (_receivingHistory) showScreen("chat");
         appendMessage(msg.role, msg.content);
-        // Re-habilitar input cuando llega respuesta del interlocutor
-        if (msg.role === "interlocutor") {
+        // Re-habilitar input cuando llega respuesta del interlocutor (solo en tiempo real)
+        if (msg.role === "interlocutor" && !_receivingHistory) {
           setInputEnabled(true);
         }
+      }
+      break;
+    }
+
+    // Fix 6: el servidor señaliza explícitamente cuándo el input debe habilitarse.
+    // Esto resuelve el caso en que el modelo falla (timeout) y el input queda bloqueado.
+    case "input_enabled": {
+      if (currentScreen === "chat") {
+        setInputEnabled(true);
       }
       break;
     }

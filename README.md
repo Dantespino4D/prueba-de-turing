@@ -60,7 +60,7 @@ cp config.example.yaml config.yaml
 Edita `config.yaml`:
 - Cambia `panel_password` y `secret_key`.
 - Ajusta `panel_path` si quieres una URL diferente para el panel.
-- Mantén `mock.enabled: true` para Fase 1.
+- Para usar el mock, apunta `rkllm.base_url` al puerto donde lo lances (ver paso 3).
 
 ### 3. Iniciar el servidor mock del RKLLM
 
@@ -68,10 +68,16 @@ En una terminal separada:
 
 ```bash
 source venv/bin/activate
-python -m mock_rkllm.server --port 9099 --min-latency 3 --max-latency 8
+python -m mock_rkllm.server --port 8081 --min-latency 3 --max-latency 8
 ```
 
 El mock imita exactamente la API del servidor RKLLM real (`POST /v1/chat/completions`).
+Para usarlo, asegúrate de que en `config.yaml` `rkllm.base_url` apunte a su puerto:
+
+```yaml
+rkllm:
+  base_url: "http://localhost:8081"
+```
 
 ### 4. Iniciar la aplicación FastAPI
 
@@ -119,15 +125,19 @@ la del cómplice. El profesor no nota diferencia alguna.
 | Clave | Descripción | Por defecto |
 |-------|-------------|-------------|
 | `session.duration_seconds` | Duración de la sesión | 300 |
-| `rkllm.base_url` | URL del servidor RKLLM | `http://host.containers.internal:8085` |
+| `rkllm.base_url` | URL del servidor RKLLM (o del mock) | `http://host.containers.internal:8085` |
 | `rkllm.timeout_seconds` | Timeout de inferencia | 40 |
 | `rkllm.max_tokens` | Tokens máximos por respuesta | 200 |
 | `timing.read_delay_min/max` | Pausa de "lectura" (s) | 1–3 |
 | `timing.typing_speed_min/max` | Velocidad simulada (car/s) | 4–6 |
 | `timing.human_min_total` | Mínimo de espera para humano (s) | 5 |
 | `timing.human_max_wait` | Máximo de espera para humano (s) | 30 |
-| `mock.enabled` | Usar mock en vez del RKLLM real | true |
 | `webhook.enabled` | Enviar resumen a n8n al terminar | false |
+
+> **Mock vs RKLLM real:** para usar el mock, lanza `python -m mock_rkllm.server --port 8081`
+> en una terminal aparte y ajusta `rkllm.base_url: "http://localhost:8081"` en `config.yaml`.
+> Para volver al RKLLM real, restaura la URL original. No hay flag `enabled`; el destino
+> se controla únicamente a través de `rkllm.base_url`.
 
 El archivo `system_prompt.txt` define el personaje de la IA. Las líneas
 que comienzan con `#` son comentarios y se ignoran.
@@ -208,12 +218,9 @@ La app los filtra automáticamente antes de entregar nada al profesor.
 
 ### Configurar la app para usar el RKLLM real
 
-En `config.yaml`:
+En `config.yaml`, apunta `rkllm.base_url` al servidor real:
 
 ```yaml
-mock:
-  enabled: false
-
 rkllm:
   base_url: "http://host.containers.internal:8085"  # desde el contenedor
   # o "http://localhost:8085" si corres la app directo en el host
@@ -340,6 +347,21 @@ de la escuela bloquea WebSocket. Los pasos serían:
 2. En el frontend, detectar si WS falla y cambiar a peticiones `fetch`.
 
 No está implementado en esta versión. Si es necesario, abrir un issue o branch.
+
+---
+
+## Lista de verificación previa a la demo
+
+Completa esta lista **antes de entrar al salón**:
+
+- [ ] El selector de modo en el panel está en **Aleatorio (50/50)**, no en "Forzar IA" ni "Forzar Humano".
+- [ ] El modelo cargado es el correcto (revisar el `model_name` que aparece en el indicador "Modelo: disponible (…)"). Para cambiar de modelo: editar `rkllm-server.service`, luego `sudo systemctl restart rkllm-server` y esperar a que cargue.
+- [ ] El indicador **"Modelo: disponible"** aparece en **verde** en el panel (puede tardar 1-3 min después de arrancar el servicio).
+- [ ] Los servicios pesados de visión que compiten por la NPU están detenidos: `sudo systemctl stop frigate` y `docker stop immich_machine_learning` (o equivalentes).
+- [ ] La **contraseña del panel** en `config.yaml` fue cambiada respecto al valor de ejemplo.
+- [ ] El historial se está escribiendo en el NAS: verificar que `/mnt/disco_8TB/historial-turing/` existe y que el contenedor tiene permisos de escritura (`ls -la /mnt/disco_8TB/historial-turing/`).
+- [ ] El acceso a `https://turing.dantespino4d.me` desde la **red de la escuela** funciona correctamente (probar antes desde ese WiFi con el celular).
+- [ ] El `secret_key` en `config.yaml` fue generado con `python -c "import secrets; print(secrets.token_hex(32))"` y no es el valor de ejemplo.
 
 ---
 

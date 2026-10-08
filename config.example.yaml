@@ -39,9 +39,11 @@ rkllm:
   repeat_penalty: 1.1
 
 # --- Mock RKLLM (solo para desarrollo) ---
+# Para usar el mock: lanza mock_rkllm aparte y apunta rkllm.base_url a su puerto.
+# Ejemplo: python -m mock_rkllm.server --port 8081
+# Luego en este archivo: rkllm.base_url: "http://localhost:8081"
 mock:
-  enabled: false          # true para desarrollo sin NPU; false para usar el RKLLM real
-  port: 9099
+  port: 8081
   min_latency_seconds: 3  # Latencia mínima simulada
   max_latency_seconds: 10 # Latencia máxima simulada
 
@@ -57,6 +59,15 @@ timing:
   human_min_total: 5.0
   # Tiempo máximo de espera de respuesta del humano (segundos)
   human_max_wait: 30.0
+  # Qué hacer cuando el cómplice no responde en human_max_wait:
+  #   "none" → el profesor ve "escribiendo..." unos segundos más y recibe un mensaje
+  #            genérico configurable (nunca silencio ni error visible).
+  #   "ia"   → el modelo RKLLM responde automáticamente esa ronda (source: ia_fallback).
+  human_timeout_fallback: "none"
+  # Segundos adicionales de "escribiendo..." antes de enviar el mensaje genérico (solo con "none")
+  generic_typing_extra_seconds: 5.0
+  # Mensaje genérico que recibe el profesor cuando se agota el tiempo y fallback=none
+  generic_timeout_message: "Interesante pregunta, déjame pensar un momento más..."
 
 # --- Historial ---
 history:

@@ -69,11 +69,12 @@ class RkllmClient:
             "Authorization": "not_required",
         }
 
-    async def ping(self) -> bool:
+    async def ping(self) -> tuple[bool, Optional[str]]:
         """
         Comprueba disponibilidad del servidor RKLLM.
         Intenta primero una conexión TCP, luego GET /v1/models.
         No hace inferencia (no ocupa la NPU).
+        Retorna (ok, model_id) donde model_id es el id del primer modelo o None.
         """
         try:
             # Extrae host y puerto de la URL
@@ -91,9 +92,18 @@ class RkllmClient:
             # Confirma con HTTP GET /v1/models (endpoint confirmado en flask_server.py)
             async with httpx.AsyncClient(timeout=5) as client:
                 r = await client.get(f"{self._base_url}/v1/models")
-                return r.status_code == 200
+                if r.status_code != 200:
+                    return False, None
+                data = r.json()
+                # Extraer el id del primer modelo de la lista
+                model_id = None
+                try:
+                    model_id = data["data"][0]["id"]
+                except (KeyError, IndexError, TypeError):
+                    pass
+                return True, model_id
         except Exception:
-            return False
+            return False, None
 
     async def test_inference(self, prompt: str = "Hola") -> Optional[str]:
         """

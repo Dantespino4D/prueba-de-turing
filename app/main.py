@@ -43,9 +43,11 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-# Intervalo de heartbeat y timeout (segundos)
-HEARTBEAT_INTERVAL = 20
-HEARTBEAT_TIMEOUT  = 10
+# Heartbeat: intervalo de ping (s) y tolerancia de fallos consecutivos antes de cerrar.
+# Fix 2: toleramos HEARTBEAT_MAX_MISSES pongs perdidos antes de considerar muerta la conexión.
+HEARTBEAT_INTERVAL  = 20
+HEARTBEAT_TIMEOUT   = 10
+HEARTBEAT_MAX_MISSES = 3   # 3 pings perdidos (~90 s) → cierre definitivo
 
 from fastapi import Cookie, Depends, FastAPI, Form, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -75,6 +77,11 @@ COOKIE_MAX_AGE = 8 * 3600
 # Serializador de cookies firmadas
 _signer = URLSafeTimedSerializer(config.app.secret_key)
 
+# Fix 3: mensajes del interlocutor que no pudieron enviarse al profesor
+# porque el WS estaba cerrado. Se reenvían cuando el profesor reconecta.
+# Lista de dicts: {"index": int, "content": str}  (index en session.history)
+_pending_professor_deliveries: list[dict] = []
+
 
 # ---------------------------------------------------------------------------
 # Lifespan (startup/shutdown)
@@ -88,9 +95,11 @@ async def lifespan(app: FastAPI):
 
 async def _initial_model_ping():
     """Comprueba disponibilidad del modelo al arrancar."""
-    ok = await rkllm_client.ping()
+    ok, model_id = await rkllm_client.ping()
     session_manager.model_ready = ok
-    print(f"[startup] Modelo {'disponible' if ok else 'NO disponible'}")
+    session_manager.model_id = model_id
+    print(f"[startup] Modelo {'disponible' if ok else 'NO disponible'}"
+          + (f": {model_id}" if model_id else ""))
     await _broadcast_panel_status()
 
 
@@ -207,11 +216,12 @@ async def _broadcast_status():
 
 
 async def _broadcast_panel_status():
-    """Informa al panel el estado de conectividad (panel_ready, model_ready)."""
+    """Informa al panel el estado de conectividad (panel_ready, model_ready, model_id)."""
     msg = {
         "type": "panel_status",
         "panel_ready": session_manager.panel_ready,
         "model_ready": session_manager.model_ready,
+        "model_id": session_manager.model_id,
     }
     if session_manager.panel_ws:
         await _send(session_manager.panel_ws, msg)
@@ -223,6 +233,23 @@ async def _notify_professor_status(connected: bool):
         await _send(session_manager.panel_ws, {
             "type": "professor_status",
             "connected": connected,
+        })
+
+
+# ---------------------------------------------------------------------------
+# Fix 7: estado de ocupación del modelo
+# ---------------------------------------------------------------------------
+
+_model_busy: bool = False  # True mientras hay una inferencia en curso
+
+async def _set_model_busy(busy: bool):
+    """Actualiza el flag de ocupación y notifica al panel."""
+    global _model_busy
+    _model_busy = busy
+    if session_manager.panel_ws:
+        await _send(session_manager.panel_ws, {
+            "type": "model_busy",
+            "busy": busy,
         })
 
 
@@ -242,23 +269,36 @@ async def professor_ws(websocket: WebSocket):
     # Enviar estado actual para recuperar sesión si existe
     await _broadcast_status()
 
-    # Si hay sesión activa, reenviar historial
+    # Fix 5: si hay sesión activa, enviar señal de "limpiar chat" PRIMERO,
+    # luego el historial completo, para que el cliente no duplique mensajes.
     sess = session_manager.session
     if sess and sess.state in (SessionState.ACTIVE, SessionState.VOTING, SessionState.FINISHED):
+        # Señal al cliente para que limpie su chat antes de recibir el historial
+        await _send(websocket, {"type": "history_start"})
         for m in sess.history:
-            # El profesor solo ve los mensajes del interlocutor (no los propios ya los tiene)
-            if m.role == "interlocutor":
+            await _send(websocket, {
+                "type": "message",
+                "role": m.role,
+                "content": m.content,
+            })
+        await _send(websocket, {"type": "history_end"})
+
+        # Fix 3: reenviar mensajes que no pudieron entregarse antes
+        if _pending_professor_deliveries:
+            for item in list(_pending_professor_deliveries):
                 await _send(websocket, {
                     "type": "message",
                     "role": "interlocutor",
-                    "content": m.content,
+                    "content": item["content"],
                 })
+            _pending_professor_deliveries.clear()
 
-    # Evento para detectar pong del heartbeat
+    # Fix 2: heartbeat con tolerancia de múltiples fallos
     _pong_event = asyncio.Event()
 
     async def _heartbeat():
-        """Envía ping periódico; cierra la conexión si no llega pong."""
+        """Envía ping periódico; cierra solo tras HEARTBEAT_MAX_MISSES fallos seguidos."""
+        misses = 0
         while True:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
             if websocket.client_state.value >= 2:  # CLOSING or CLOSED
@@ -267,12 +307,19 @@ async def professor_ws(websocket: WebSocket):
             await _send(websocket, {"type": "ping"})
             try:
                 await asyncio.wait_for(_pong_event.wait(), timeout=HEARTBEAT_TIMEOUT)
+                misses = 0  # pong recibido: resetear contador
             except asyncio.TimeoutError:
-                print("[ws/profesor] Heartbeat timeout — cerrando")
-                await websocket.close()
-                break
+                misses += 1
+                print(f"[ws/profesor] Heartbeat miss {misses}/{HEARTBEAT_MAX_MISSES}")
+                if misses >= HEARTBEAT_MAX_MISSES:
+                    print("[ws/profesor] Demasiados misses — cerrando")
+                    await websocket.close()
+                    break
 
     hb_task = asyncio.create_task(_heartbeat())
+
+    # Fix 1: guardamos el task de respuesta en curso para poder cancelarlo si el WS cierra
+    _active_response_task: asyncio.Task | None = None
 
     try:
         while True:
@@ -291,7 +338,12 @@ async def professor_ws(websocket: WebSocket):
                 _pong_event.set()
 
             elif mtype == "message":
-                await _handle_professor_message(websocket, msg.get("content", "").strip())
+                content = msg.get("content", "").strip()
+                # Fix 1: lanzar la lógica de respuesta como tarea independiente,
+                # de modo que el loop siga libre para recibir pongs y take_control.
+                _active_response_task = asyncio.create_task(
+                    _handle_professor_message(websocket, content)
+                )
 
             elif mtype == "vote":
                 await _handle_professor_vote(websocket, msg.get("answer", ""))
@@ -300,6 +352,8 @@ async def professor_ws(websocket: WebSocket):
         pass
     finally:
         hb_task.cancel()
+        # No cancelamos _active_response_task: si la IA está generando, queremos
+        # que termine y quede en el historial aunque el WS esté caído.
         print("[ws/profesor] Desconectado")
         session_manager.professor_ws = None
         await _notify_professor_status(False)
@@ -316,7 +370,7 @@ async def _handle_professor_message(ws: WebSocket, content: str):
         await _send(ws, {"type": "error", "message": "No hay sesión activa."})
         return
 
-    # Guardar mensaje del profesor
+    # Guardar mensaje del profesor (sin source: viene del profesor)
     await session_manager.add_message("profesor", content)
 
     # Enviar mensaje al panel también (el cómplice ve la conversación completa)
@@ -343,6 +397,10 @@ async def _respond_as_ai(ws: WebSocket, sess):
     """
     Pide respuesta al modelo, aplica retrasos y la entrega al profesor.
     Permite que el cómplice tome el control durante la generación.
+
+    Fix 1: corre como tarea independiente → el WS sigue libre para pong/take_control.
+    Fix 4: el takeover funciona en cualquier momento, incluso tras timeout del modelo.
+    Fix 7: notifica al panel cuando el modelo está ocupado.
     """
     # Pausa de lectura
     read_wait = reading_delay()
@@ -353,6 +411,9 @@ async def _respond_as_ai(ws: WebSocket, sess):
     if session_manager.panel_ws:
         await _send(session_manager.panel_ws, {"type": "typing", "state": True})
 
+    # Fix 7: indicar al panel que el modelo está ocupado
+    await _set_model_busy(True)
+
     # Lanzar inferencia y espera de take_control en paralelo
     history = session_manager.get_history_for_rkllm()
 
@@ -362,7 +423,7 @@ async def _respond_as_ai(ws: WebSocket, sess):
     session_manager._takeover_event.clear()
     session_manager._takeover_text = None
 
-    # Evento de respaldo via parche de deliver_human_response
+    # Fix 4: evento de respaldo via parche de deliver_human_response
     take_control_event = asyncio.Event()
     _pending_takeover: list[str] = []
 
@@ -396,6 +457,9 @@ async def _respond_as_ai(ws: WebSocket, sess):
     # Restaurar función original
     session_manager.deliver_human_response = original_deliver
 
+    # Fix 7: modelo ya no está ocupado (ya sea porque terminó o porque se canceló)
+    await _set_model_busy(False)
+
     # Comprobar takeover por cualquiera de las dos vías
     takeover_text = None
     if session_manager._takeover_event.is_set() and session_manager._takeover_text:
@@ -406,29 +470,48 @@ async def _respond_as_ai(ws: WebSocket, sess):
         print(f"[respond_as_ai] Takeover via parche detectado: {takeover_text!r}")
 
     if takeover_text is not None:
-        # El cómplice tomó el control: cancelar la IA y usar su respuesta
-        ai_task.cancel()
+        # Fix 4: El cómplice tomó el control.
+        # Cancelar la tarea de IA si todavía está corriendo.
+        if not ai_task.done():
+            ai_task.cancel()
+            try:
+                await ai_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
         elapsed = time.monotonic() - t0
         extra = human_response_delay(takeover_text, elapsed)
         if extra > 0:
             await asyncio.sleep(extra)
-        await _deliver_response(ws, takeover_text, sess)
+        # A1: source=takeover (el evento ya fue registrado en take_control)
+        await _deliver_response(ws, takeover_text, sess, source="takeover", delay_applied_s=extra)
         return
 
     # Obtener resultado de la IA
-    result = ai_task.result() if not ai_task.cancelled() else (None, 0.0)
+    if ai_task.cancelled():
+        result = (None, 0.0)
+    else:
+        try:
+            result = ai_task.result()
+        except Exception:
+            result = (None, 0.0)
     if result is None:
         result = (None, 0.0)
     ai_text, model_elapsed = result
 
     if ai_text is None:
-        # Error en el modelo
-        await _send(session_manager.professor_ws, {"type": "typing", "state": False})
+        # A1: registrar evento de error de modelo
+        if sess:
+            sess.add_event("error_modelo")
+        # Apagar "escribiendo..." en ambos lados
+        await _send_typing_off()
         if session_manager.panel_ws:
             await _send(session_manager.panel_ws, {
                 "type": "error",
                 "message": "El modelo no respondió. Puedes tomar el control.",
             })
+        # Fix 6: habilitar el input del profesor para que no quede bloqueado
+        await _send(session_manager.professor_ws, {"type": "input_enabled"})
         return
 
     # Retraso adicional para simular escritura (descontando tiempo del modelo)
@@ -436,12 +519,21 @@ async def _respond_as_ai(ws: WebSocket, sess):
     if extra > 0:
         await asyncio.sleep(extra)
 
-    await _deliver_response(ws, ai_text, sess)
+    # A1: source=ia, latencia del modelo y retraso aplicado
+    await _deliver_response(ws, ai_text, sess, source="ia",
+                            model_latency_s=model_elapsed, delay_applied_s=extra)
 
 
 async def _respond_as_human(ws: WebSocket, sess):
     """
     Espera la respuesta del cómplice, aplica retrasos mínimos y la entrega.
+
+    A2: si el cómplice no responde en human_max_wait:
+      - fallback="ia"   → el modelo responde automáticamente (source=ia_fallback).
+      - fallback="none" → mantiene "escribiendo..." generic_typing_extra_seconds más
+                          y luego entrega un mensaje genérico (nunca silencio ni error
+                          visible para el profesor).
+    En ambos casos se avisa al cómplice en el panel.
     """
     if session_manager.panel_ws:
         await _send(session_manager.panel_ws, {
@@ -454,14 +546,71 @@ async def _respond_as_human(ws: WebSocket, sess):
     elapsed = time.monotonic() - t0
 
     if human_text is None:
-        # Timeout: avisar al panel
+        # --- A2: timeout del cómplice ---
+        # Avisar siempre al panel
+        fallback = config.timing.human_timeout_fallback
+
         if session_manager.panel_ws:
+            fallback_label = "el modelo responderá automáticamente" if fallback == "ia" \
+                             else "se enviará un mensaje genérico al profesor"
             await _send(session_manager.panel_ws, {
                 "type": "error",
-                "message": "Tiempo de espera agotado.",
+                "message": f"Tiempo de espera agotado ({fallback_label}).",
             })
+
+        if fallback == "ia":
+            # El modelo responde esta ronda; la fuente queda como ia_fallback
+            await _set_model_busy(True)
+            history = session_manager.get_history_for_rkllm()
+            result = await rkllm_client.chat(history, system_prompt=config.system_prompt)
+            await _set_model_busy(False)
+            if result is None:
+                result = (None, 0.0)
+            ai_text, model_elapsed = result
+
+            if ai_text is None:
+                # Modelo también falló: caer al mensaje genérico
+                if sess:
+                    sess.add_event("error_modelo")
+                ai_text = config.timing.generic_timeout_message
+                model_elapsed = 0.0
+
+            # Mostrar "escribiendo..." con retraso normal antes de entregar
+            await _send(ws, {"type": "typing", "state": True})
+            if session_manager.panel_ws:
+                await _send(session_manager.panel_ws, {"type": "typing", "state": True})
+
+            extra = ai_response_delay(ai_text, model_elapsed)
+            if extra > 0:
+                await asyncio.sleep(extra)
+
+            # A1: ia_fallback; registrar evento
+            if sess:
+                sess.add_event("ia_fallback")
+            await _deliver_response(ws, ai_text, sess,
+                                    source="ia_fallback",
+                                    model_latency_s=model_elapsed,
+                                    delay_applied_s=extra)
+        else:
+            # fallback="none": mantener "escribiendo..." y entregar mensaje genérico
+            await _send(ws, {"type": "typing", "state": True})
+            if session_manager.panel_ws:
+                await _send(session_manager.panel_ws, {"type": "typing", "state": True})
+
+            extra_wait = config.timing.generic_typing_extra_seconds
+            if extra_wait > 0:
+                await asyncio.sleep(extra_wait)
+
+            generic_msg = config.timing.generic_timeout_message
+            # A1: ia_fallback (también es un substituto generado, no vino del humano)
+            if sess:
+                sess.add_event("ia_fallback")
+            await _deliver_response(ws, generic_msg, sess,
+                                    source="ia_fallback",
+                                    delay_applied_s=extra_wait)
         return
 
+    # --- Camino normal: el cómplice respondió a tiempo ---
     # Pausa de lectura antes de "escribiendo..."
     read_wait = reading_delay()
     await asyncio.sleep(read_wait)
@@ -475,19 +624,70 @@ async def _respond_as_human(ws: WebSocket, sess):
     if extra > 0:
         await asyncio.sleep(extra)
 
-    await _deliver_response(ws, human_text, sess)
+    # A1: source=humano, retraso aplicado
+    await _deliver_response(ws, human_text, sess, source="humano", delay_applied_s=extra)
 
 
-async def _deliver_response(ws: WebSocket, text: str, sess):
-    """Apaga el indicador de escritura y entrega el mensaje al profesor."""
-    await _send(session_manager.professor_ws, {"type": "typing", "state": False})
+async def _send_typing_off():
+    """Apaga el indicador de escritura en ambos lados (seguro aunque el WS esté caído)."""
+    if session_manager.professor_ws:
+        await _send(session_manager.professor_ws, {"type": "typing", "state": False})
     if session_manager.panel_ws:
         await _send(session_manager.panel_ws, {"type": "typing", "state": False})
 
-    await session_manager.add_message("interlocutor", text)
+
+async def _deliver_response(
+    ws: WebSocket,
+    text: str,
+    sess,
+    source: str = "ia",
+    model_latency_s: float | None = None,
+    delay_applied_s: float | None = None,
+):
+    """
+    Apaga el indicador de escritura y entrega el mensaje al profesor.
+
+    Fix 3: el mensaje se guarda en el historial ANTES de intentar enviarlo.
+    Si el WS del profesor está caído, se encola en _pending_professor_deliveries
+    y se entrega la próxima vez que reconecte.
+    Cada envío va en try/except para que un socket muerto no aborte el flujo.
+    """
+    await _send_typing_off()
+
+    # Fix 3: PRIMERO guardar en historial, LUEGO intentar enviar
+    await session_manager.add_message(
+        "interlocutor", text,
+        source=source,
+        model_latency_s=model_latency_s,
+        delay_applied_s=delay_applied_s,
+    )
 
     # Enviar al profesor
-    await _send(session_manager.professor_ws, {"type": "message", "role": "interlocutor", "content": text})
+    prof_ws = session_manager.professor_ws
+    delivered = False
+    if prof_ws is not None:
+        try:
+            await prof_ws.send_json({"type": "message", "role": "interlocutor", "content": text})
+            delivered = True
+        except Exception:
+            delivered = False
+
+    if not delivered:
+        # Fix 3: WS cerrado — encolar para reenvío al reconectar y avisar al panel
+        _pending_professor_deliveries.append({"content": text})
+        if sess:
+            sess.add_event("entrega_fallida")
+        print(f"[deliver] Mensaje encolado para reenvío: {text[:60]!r}")
+        if session_manager.panel_ws:
+            await _send(session_manager.panel_ws, {
+                "type": "error",
+                "message": "Mensaje no pudo entregarse al profesor (WS caído). Se reenviará al reconectar.",
+            })
+
+    # Fix 6: señal para que el frontend del profesor habilite el input
+    # (se envía siempre; si el WS está caído, lo procesará al reconectar junto con el historial)
+    if session_manager.professor_ws:
+        await _send(session_manager.professor_ws, {"type": "input_enabled"})
 
     # Enviar también al panel (para que el cómplice vea la conversación completa)
     if session_manager.panel_ws:
@@ -498,7 +698,7 @@ async def _deliver_response(ws: WebSocket, text: str, sess):
         })
 
     # Comprobar si la sesión expiró después de este mensaje
-    if sess.is_expired():
+    if sess and sess.is_expired():
         await _trigger_voting()
 
 
@@ -511,7 +711,13 @@ async def _handle_professor_vote(ws: WebSocket, answer: str):
         return
 
     sess = session_manager.session
-    await session_manager.save_history()
+    save_error = await session_manager.save_history()
+    if save_error:
+        if session_manager.panel_ws:
+            await _send(session_manager.panel_ws, {
+                "type": "error",
+                "message": f"El historial NO se guardó: {save_error}",
+            })
 
     result_msg = {
         "type": "result",
@@ -562,6 +768,9 @@ async def panel_ws_endpoint(websocket: WebSocket):
     await _broadcast_status()
     await _broadcast_panel_status()
 
+    # Enviar estado del modelo (ocupado o no)
+    await _send(websocket, {"type": "model_busy", "busy": _model_busy})
+
     # Enviar estado del profesor en este momento
     await _send(websocket, {
         "type": "professor_status",
@@ -580,11 +789,12 @@ async def panel_ws_endpoint(websocket: WebSocket):
                 "content": m.content,
             })
 
-    # Evento para detectar pong del heartbeat
+    # Fix 2: heartbeat con tolerancia de múltiples fallos (igual que el del profesor)
     _pong_event = asyncio.Event()
 
     async def _heartbeat():
-        """Envía ping periódico; cierra la conexión si no llega pong."""
+        """Envía ping periódico; cierra solo tras HEARTBEAT_MAX_MISSES fallos seguidos."""
+        misses = 0
         while True:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
             if websocket.client_state.value >= 2:
@@ -593,10 +803,14 @@ async def panel_ws_endpoint(websocket: WebSocket):
             await _send(websocket, {"type": "ping"})
             try:
                 await asyncio.wait_for(_pong_event.wait(), timeout=HEARTBEAT_TIMEOUT)
+                misses = 0
             except asyncio.TimeoutError:
-                print("[ws/panel] Heartbeat timeout — cerrando")
-                await websocket.close()
-                break
+                misses += 1
+                print(f"[ws/panel] Heartbeat miss {misses}/{HEARTBEAT_MAX_MISSES}")
+                if misses >= HEARTBEAT_MAX_MISSES:
+                    print("[ws/panel] Demasiados misses — cerrando")
+                    await websocket.close()
+                    break
 
     hb_task = asyncio.create_task(_heartbeat())
 
@@ -658,15 +872,27 @@ async def panel_ws_endpoint(websocket: WebSocket):
                     asyncio.create_task(_session_timer(sess.session_id))
 
             elif mtype == "reset_session":
-                await session_manager.reset_session()
+                save_error = await session_manager.reset_session()
+                # Limpiar entregas pendientes al reiniciar sesión
+                _pending_professor_deliveries.clear()
                 await _broadcast_status()
+                if save_error:
+                    await _send(websocket, {
+                        "type": "error",
+                        "message": f"Sesión reiniciada, pero el historial NO se guardó: {save_error}",
+                    })
                 await _send(websocket, {"type": "session_reset"})
 
             elif mtype == "test_model":
-                # Probar el modelo con una inferencia corta
-                result = await rkllm_client.test_inference()
-                ok = result[0] is not None if isinstance(result, tuple) else result is not None
+                # Probar el modelo con una inferencia corta; actualiza también model_id
+                ping_ok, model_id = await rkllm_client.ping()
+                if ping_ok:
+                    result = await rkllm_client.test_inference()
+                    ok = result[0] is not None if isinstance(result, tuple) else result is not None
+                else:
+                    ok = False
                 session_manager.model_ready = ok
+                session_manager.model_id = model_id if ok else None
                 await _send(websocket, {"type": "ping_result", "ok": ok})
                 await _broadcast_panel_status()
 

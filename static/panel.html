@@ -44,6 +44,8 @@
         <button class="panel-btn" id="btn-reset">↺ Reiniciar sesión</button>
         <button class="panel-btn" id="btn-test-model">🔬 Probar modelo</button>
         <div id="test-model-result" style="font-size:0.8rem;color:var(--text-muted);"></div>
+        <!-- Fix 7: visible mientras el modelo está procesando una inferencia -->
+        <div id="model-busy-indicator" style="display:none;font-size:0.8rem;color:#f59e0b;padding:0.3rem 0;font-weight:600;">⏳ Modelo generando…</div>
       </div>
     </aside>
 
@@ -52,6 +54,8 @@
       <div class="chat-container" style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
         <header class="chat-header">
           <span class="chat-title">Conversación</span>
+          <!-- A3: botón de silenciar notificaciones del cómplice -->
+          <button id="btn-mute-notify" title="Silenciar notificaciones de mensaje" style="background:none;border:1px solid var(--border);color:var(--text-muted);border-radius:6px;padding:0.2rem 0.55rem;font-size:0.8rem;cursor:pointer;">🔔</button>
           <span id="panel-clock" class="timer">--:--</span>
         </header>
 
