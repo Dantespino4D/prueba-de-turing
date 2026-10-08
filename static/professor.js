@@ -140,6 +140,14 @@ function showResult(data) {
 function handleMessage(msg) {
   switch (msg.type) {
 
+    case "ping": {
+      // El servidor envía ping como heartbeat; responder con pong
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "pong" }));
+      }
+      break;
+    }
+
     case "status": {
       const state = msg.state;
       if (state === "active") {
@@ -229,18 +237,11 @@ function connect() {
   });
 }
 
-let pingInterval = null;
-function startPing() {
-  clearInterval(pingInterval);
-  pingInterval = setInterval(() => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "ping" }));
-    }
-  }, 25000);
-}
-function stopPing() {
-  clearInterval(pingInterval);
-}
+// El servidor maneja el heartbeat desde su lado (ping → pong).
+// Solo necesitamos responder a los pings del servidor (ya manejado en handleMessage).
+// Mantenemos startPing/stopPing como no-ops para no romper el flujo de open/close.
+function startPing() {}
+function stopPing() {}
 
 function scheduleReconnect() {
   clearTimeout(reconnectTimer);

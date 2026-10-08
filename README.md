@@ -68,7 +68,7 @@ En una terminal separada:
 
 ```bash
 source venv/bin/activate
-python -m mock_rkllm.server --port 8080 --min-latency 3 --max-latency 8
+python -m mock_rkllm.server --port 9099 --min-latency 3 --max-latency 8
 ```
 
 El mock imita exactamente la API del servidor RKLLM real (`POST /v1/chat/completions`).
@@ -119,7 +119,7 @@ la del cómplice. El profesor no nota diferencia alguna.
 | Clave | Descripción | Por defecto |
 |-------|-------------|-------------|
 | `session.duration_seconds` | Duración de la sesión | 300 |
-| `rkllm.base_url` | URL del servidor RKLLM | `http://host.containers.internal:8080` |
+| `rkllm.base_url` | URL del servidor RKLLM | `http://host.containers.internal:8085` |
 | `rkllm.timeout_seconds` | Timeout de inferencia | 40 |
 | `rkllm.max_tokens` | Tokens máximos por respuesta | 200 |
 | `timing.read_delay_min/max` | Pausa de "lectura" (s) | 1–3 |
@@ -138,7 +138,7 @@ que comienzan con `#` son comentarios y se ignoran.
 
 ### API del servidor RKLLM (flask_server.py)
 
-El servidor expone una API compatible con OpenAI en el puerto **8080** (por defecto):
+El servidor expone una API compatible con OpenAI en el puerto **8085**:
 
 | Método | Ruta | Descripción |
 |--------|------|-------------|
@@ -215,8 +215,8 @@ mock:
   enabled: false
 
 rkllm:
-  base_url: "http://host.containers.internal:8080"  # desde el contenedor
-  # o "http://localhost:8080" si corres la app directo en el host
+  base_url: "http://host.containers.internal:8085"  # desde el contenedor
+  # o "http://localhost:8085" si corres la app directo en el host
   timeout_seconds: 40
 ```
 
@@ -255,7 +255,7 @@ podman run -d \
 >   -v /mnt/disco_8TB/historial-turing:/mnt/disco_8TB/historial-turing:Z \
 >   prueba-turing:latest
 > ```
-> Con `--network=host` usa `rkllm.base_url: "http://localhost:8080"` en config.yaml.
+> Con `--network=host` usa `rkllm.base_url: "http://localhost:8085"` en config.yaml.
 
 ### Unidad systemd/Quadlet (opcional, para arranque automático)
 

@@ -12,7 +12,7 @@ WorkingDirectory=/home/dante/rknn-llm/examples/rkllm_server_demo/rkllm_server
 # Ajusta MODEL_PATH al modelo que quieras cargar.
 # Cambiar de modelo requiere reiniciar este servicio.
 Environment="MODEL_PATH=/home/dante/jarvis/llama3.1-supernova-instruct-merge-ab.rkllm"
-Environment="RKLLM_PORT=8080"
+# El puerto (8085) está fijo en la línea app.run() de flask_server.py; para cambiarlo hay que editar ese archivo.
 
 # Activar venv del proyecto
 ExecStartPre=/bin/bash -c 'source /home/dante/rknn-llm/examples/rkllm_server_demo/venv/bin/activate'

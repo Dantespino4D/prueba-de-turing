@@ -9,7 +9,7 @@ Responde con frases de una lista predefinida, con latencia simulada configurable
 No requiere hardware NPU.
 
 Uso:
-  python -m mock_rkllm.server [--port 8080] [--min-latency 3] [--max-latency 10]
+  python -m mock_rkllm.server [--port 8081] [--min-latency 3] [--max-latency 10]
 """
 import argparse
 import random
@@ -118,7 +118,7 @@ def main():
     global _min_latency, _max_latency
 
     parser = argparse.ArgumentParser(description="Mock RKLLM Server para desarrollo")
-    parser.add_argument("--port", type=int, default=8080, help="Puerto (default: 8080)")
+    parser.add_argument("--port", type=int, default=8081, help="Puerto (default: 8081)")
     parser.add_argument("--min-latency", type=float, default=3.0, help="Latencia mínima en segundos")
     parser.add_argument("--max-latency", type=float, default=10.0, help="Latencia máxima en segundos")
     args = parser.parse_args()

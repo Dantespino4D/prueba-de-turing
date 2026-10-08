@@ -27,7 +27,7 @@ class SessionConfig:
 
 @dataclass
 class RkllmConfig:
-    base_url: str = "http://host.containers.internal:8080"
+    base_url: str = "http://host.containers.internal:8085"
     timeout_seconds: int = 40
     max_tokens: int = 200
     temperature: float = 0.8
@@ -39,7 +39,7 @@ class RkllmConfig:
 @dataclass
 class MockConfig:
     enabled: bool = True
-    port: int = 8080
+    port: int = 9099
     min_latency_seconds: float = 3.0
     max_latency_seconds: float = 10.0
 

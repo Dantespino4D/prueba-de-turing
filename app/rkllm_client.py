@@ -80,7 +80,7 @@ class RkllmClient:
             from urllib.parse import urlparse
             parsed = urlparse(self._base_url)
             host = parsed.hostname or "localhost"
-            port = parsed.port or 8080
+            port = parsed.port or 8085
 
             # Conexión TCP (rápida)
             loop = asyncio.get_event_loop()

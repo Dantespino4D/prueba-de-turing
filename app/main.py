@@ -43,6 +43,10 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+# Intervalo de heartbeat y timeout (segundos)
+HEARTBEAT_INTERVAL = 20
+HEARTBEAT_TIMEOUT  = 10
+
 from fastapi import Cookie, Depends, FastAPI, Form, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -213,6 +217,15 @@ async def _broadcast_panel_status():
         await _send(session_manager.panel_ws, msg)
 
 
+async def _notify_professor_status(connected: bool):
+    """Avisa al panel si el profesor está conectado o no."""
+    if session_manager.panel_ws:
+        await _send(session_manager.panel_ws, {
+            "type": "professor_status",
+            "connected": connected,
+        })
+
+
 # ---------------------------------------------------------------------------
 # WebSocket del profesor
 # ---------------------------------------------------------------------------
@@ -222,6 +235,9 @@ async def professor_ws(websocket: WebSocket):
     await websocket.accept()
     session_manager.professor_ws = websocket
     print("[ws/profesor] Conectado")
+
+    # Avisar al panel que el profesor está conectado
+    await _notify_professor_status(True)
 
     # Enviar estado actual para recuperar sesión si existe
     await _broadcast_status()
@@ -238,6 +254,26 @@ async def professor_ws(websocket: WebSocket):
                     "content": m.content,
                 })
 
+    # Evento para detectar pong del heartbeat
+    _pong_event = asyncio.Event()
+
+    async def _heartbeat():
+        """Envía ping periódico; cierra la conexión si no llega pong."""
+        while True:
+            await asyncio.sleep(HEARTBEAT_INTERVAL)
+            if websocket.client_state.value >= 2:  # CLOSING or CLOSED
+                break
+            _pong_event.clear()
+            await _send(websocket, {"type": "ping"})
+            try:
+                await asyncio.wait_for(_pong_event.wait(), timeout=HEARTBEAT_TIMEOUT)
+            except asyncio.TimeoutError:
+                print("[ws/profesor] Heartbeat timeout — cerrando")
+                await websocket.close()
+                break
+
+    hb_task = asyncio.create_task(_heartbeat())
+
     try:
         while True:
             raw = await websocket.receive_text()
@@ -251,6 +287,9 @@ async def professor_ws(websocket: WebSocket):
             if mtype == "ping":
                 await _send(websocket, {"type": "pong"})
 
+            elif mtype == "pong":
+                _pong_event.set()
+
             elif mtype == "message":
                 await _handle_professor_message(websocket, msg.get("content", "").strip())
 
@@ -258,8 +297,12 @@ async def professor_ws(websocket: WebSocket):
                 await _handle_professor_vote(websocket, msg.get("answer", ""))
 
     except WebSocketDisconnect:
+        pass
+    finally:
+        hb_task.cancel()
         print("[ws/profesor] Desconectado")
         session_manager.professor_ws = None
+        await _notify_professor_status(False)
 
 
 async def _handle_professor_message(ws: WebSocket, content: str):
@@ -519,6 +562,12 @@ async def panel_ws_endpoint(websocket: WebSocket):
     await _broadcast_status()
     await _broadcast_panel_status()
 
+    # Enviar estado del profesor en este momento
+    await _send(websocket, {
+        "type": "professor_status",
+        "connected": session_manager.professor_ws is not None,
+    })
+
     # Enviar rol si hay sesión
     sess = session_manager.session
     if sess:
@@ -530,6 +579,26 @@ async def panel_ws_endpoint(websocket: WebSocket):
                 "role": m.role,
                 "content": m.content,
             })
+
+    # Evento para detectar pong del heartbeat
+    _pong_event = asyncio.Event()
+
+    async def _heartbeat():
+        """Envía ping periódico; cierra la conexión si no llega pong."""
+        while True:
+            await asyncio.sleep(HEARTBEAT_INTERVAL)
+            if websocket.client_state.value >= 2:
+                break
+            _pong_event.clear()
+            await _send(websocket, {"type": "ping"})
+            try:
+                await asyncio.wait_for(_pong_event.wait(), timeout=HEARTBEAT_TIMEOUT)
+            except asyncio.TimeoutError:
+                print("[ws/panel] Heartbeat timeout — cerrando")
+                await websocket.close()
+                break
+
+    hb_task = asyncio.create_task(_heartbeat())
 
     try:
         while True:
@@ -543,6 +612,9 @@ async def panel_ws_endpoint(websocket: WebSocket):
 
             if mtype == "ping":
                 await _send(websocket, {"type": "pong"})
+
+            elif mtype == "pong":
+                _pong_event.set()
 
             elif mtype == "response":
                 # El cómplice envía su respuesta (ronda humana)
@@ -599,6 +671,9 @@ async def panel_ws_endpoint(websocket: WebSocket):
                 await _broadcast_panel_status()
 
     except WebSocketDisconnect:
+        pass
+    finally:
+        hb_task.cancel()
         print("[ws/panel] Cómplice desconectado")
         session_manager.panel_ws = None
         session_manager.panel_ready = False

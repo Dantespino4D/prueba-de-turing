@@ -206,6 +206,19 @@ function autoResize(el) {
 function handleMessage(msg) {
   switch (msg.type) {
 
+    case "ping": {
+      // El servidor envía ping como heartbeat; responder con pong
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "pong" }));
+      }
+      break;
+    }
+
+    case "professor_status": {
+      updateProfessorStatus(msg.connected);
+      break;
+    }
+
     case "status": {
       const state = msg.state;
       sessionActive = state === "active";
@@ -238,10 +251,6 @@ function handleMessage(msg) {
         remainingSeconds = msg.remaining;
       }
 
-      // Inducir estado del profesor desde el estado de la sesión
-      if (state !== "waiting") {
-        updateProfessorStatus(true);
-      }
       break;
     }
 
@@ -426,16 +435,10 @@ function connect() {
   ws.addEventListener("error", () => ws.close());
 }
 
-let pingInterval = null;
-function startPing() {
-  clearInterval(pingInterval);
-  pingInterval = setInterval(() => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "ping" }));
-    }
-  }, 25000);
-}
-function stopPing() { clearInterval(pingInterval); }
+// El servidor maneja el heartbeat desde su lado (ping → pong).
+// Solo necesitamos responder a los pings del servidor (ya manejado en handleMessage).
+function startPing() {}
+function stopPing() {}
 
 function scheduleReconnect() {
   clearTimeout(reconnectTimer);

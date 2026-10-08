@@ -17,7 +17,7 @@ Construye una aplicación web para una prueba de Turing controlada, para una dem
 - Proyecto: `/home/dante/prueba-turing`.
 - RKLLM: repo en `/home/dante/rknn-llm`, servidor en `/home/dante/rknn-llm/examples/rkllm_server_demo/` (carpeta `rkllm_server/lib` vacía: hay que correr `build_rkllm_server_flask.sh` o copiar `librkllmrt.so` desde `rkllm-runtime/Linux/librkllm_api/aarch64/`). Driver NPU: v0.9.7.
 - Modelos `.rkllm` en `/home/dante/jarvis/`: `llama3.1-supernova-instruct-merge-ab.rkllm`, `qwen2.5-3b-distill.rkllm`, `qwen2.5-3b-josiefied.rkllm`, `qwen2.5-1.5B-agentic-trace.rkllm`, `qwen2.5-7b-coder-rk3588-UC.rkllm`. El modelo debe ser **seleccionable por config**; candidatos principales: el Llama 3.1 supernova (~8B) y un Qwen2.5 3B. Algunos pueden emitir bloques de razonamiento (`<think>...</think>`): la app debe **filtrarlos** antes de entregar nada al profesor.
-- Puertos ya ocupados en el host: 22, 53, 5000, 5355, 6167, 8000, 8090, 1984, 8554, 8555, 8971, 38423, 64390. Usar: **FastAPI 8100**, **RKLLM 8080** (default del demo). Ambos configurables.
+- Puertos ya ocupados en el host: 22, 53, 5000, 5355, 6167, 8000, 8090, 1984, 8554, 8555, 8971, 38423, 64390. Usar: **FastAPI 8100**, **RKLLM 8085** (default del demo). Ambos configurables.
 - Dominio: `turing.dantespino4d.me`. Equipo: un solo cómplice a la vez, una sola sesión activa. Idioma de toda la interfaz: español (México).
 - Contraseña del panel y ruta oculta del panel: en el archivo de config (valores de ejemplo, yo los cambio).
 - Opcional: llamada a un webhook (n8n) al terminar la sesión, desactivada por defecto. No es parte del camino crítico.
