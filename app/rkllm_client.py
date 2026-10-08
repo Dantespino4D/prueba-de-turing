@@ -123,7 +123,10 @@ class RkllmClient:
         """
         Envía un historial al modelo y devuelve (respuesta, elapsed_seconds).
 
-        Antepone el system prompt si se provee.
+        Antepone el system prompt como mensaje de rol "system" (formato OpenAI).
+        El flask_server extrae sys_prompt del mensaje system y construye el
+        ChatML completo antes de llamar a rkllm_model.run(), garantizando que
+        el motor C++ reciba la instrucción de sistema con el rol correcto.
         Filtra bloques <think> de la respuesta.
         Retorna (None, 0.0) si hay error, timeout o servidor ocupado.
 
@@ -131,8 +134,13 @@ class RkllmClient:
         El lock local evita que esto ocurra en condiciones normales.
         """
         async with self._lock:
-            full_messages = []
             sp = system_prompt or config.system_prompt
+
+            # Enviamos los mensajes en formato OpenAI nativo:
+            # [{"role":"system","content":"..."}, {"role":"user","content":"..."}, ...]
+            # El flask_server extrae sys_prompt del system message y construye
+            # el ChatML completo antes de llamar a rkllm_model.run().
+            full_messages: list[dict] = []
             if sp:
                 full_messages.append({"role": "system", "content": sp})
             full_messages.extend(messages)
