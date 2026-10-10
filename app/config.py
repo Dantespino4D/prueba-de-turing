@@ -60,6 +60,9 @@ class TimingConfig:
     generic_typing_extra_seconds: float = 5.0
     # Mensaje genérico que recibe el profesor cuando se agota el tiempo y fallback=none
     generic_timeout_message: str = "Interesante pregunta, déjame pensar un momento más..."
+    # Filtro de respuesta IA: recortar a max_words palabras y eliminar oraciones incompletas
+    filter_enabled: bool = True
+    filter_max_words: int = 18
 
 
 @dataclass

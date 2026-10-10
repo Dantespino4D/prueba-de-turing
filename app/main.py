@@ -55,6 +55,7 @@ from fastapi.staticfiles import StaticFiles
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from .config import config
+from .filtro_respuesta import limpiar_respuesta
 from .rkllm_client import rkllm_client
 from .session import ForcedMode, SessionState, session_manager
 from .timing import ai_response_delay, human_response_delay, reading_delay, typing_speed_chars_per_sec
@@ -651,8 +652,19 @@ async def _deliver_response(
     Si el WS del profesor está caído, se encola en _pending_professor_deliveries
     y se entrega la próxima vez que reconecte.
     Cada envío va en try/except para que un socket muerto no aborte el flujo.
+
+    Para source "ia" e "ia_fallback" aplica limpiar_respuesta() si está habilitado.
+    El texto original se guarda como text_raw en el historial; el filtrado como content.
     """
     await _send_typing_off()
+
+    # Aplicar filtro solo a respuestas del modelo (no a humano ni takeover)
+    text_raw: str | None = None
+    if source in ("ia", "ia_fallback") and config.timing.filter_enabled:
+        filtered = limpiar_respuesta(text, max_words=config.timing.filter_max_words)
+        if filtered != text:
+            text_raw = text   # guardar original solo cuando el filtro cambió algo
+        text = filtered
 
     # Fix 3: PRIMERO guardar en historial, LUEGO intentar enviar
     await session_manager.add_message(
@@ -660,6 +672,7 @@ async def _deliver_response(
         source=source,
         model_latency_s=model_latency_s,
         delay_applied_s=delay_applied_s,
+        text_raw=text_raw,
     )
 
     # Enviar al profesor

@@ -6,6 +6,7 @@ After=network.target
 Type=simple
 User=dante
 WorkingDirectory=/home/dante/rknn-llm/examples/rkllm_server_demo/rkllm_server
+ExecStartPre=+/usr/bin/bash /home/dante/rknn-llm/scripts/fix_freq_rk3588.sh
 
 # Para cambiar de modelo: descomentar UNO y comentar los demás, luego:
 #   sudo systemctl daemon-reload && sudo systemctl restart rkllm-server
