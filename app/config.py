@@ -63,6 +63,8 @@ class TimingConfig:
     # Filtro de respuesta IA: recortar a max_words palabras y eliminar oraciones incompletas
     filter_enabled: bool = True
     filter_max_words: int = 18
+    # Ráfaga: segundos de espera tras el último mensaje del profesor antes de generar respuesta
+    burst_wait_seconds: float = 2.5
 
 
 @dataclass

@@ -367,16 +367,23 @@ class SessionManager:
     def get_history_for_rkllm(self) -> list[dict]:
         """
         Devuelve el historial en formato OpenAI messages para enviar al modelo.
-        Incluye solo los turnos del professor (user) e interlocutor (assistant).
+        Incluye solo los turnos del profesor (user) e interlocutor (assistant).
+        Mensajes consecutivos del mismo rol se fusionan en un solo turno, unidos con "\n".
         """
         if self._session is None:
             return []
-        messages = []
+        messages: list[dict] = []
         for m in self._session.history:
             if m.role == "profesor":
-                messages.append({"role": "user", "content": m.content})
+                role = "user"
             elif m.role == "interlocutor":
-                messages.append({"role": "assistant", "content": m.content})
+                role = "assistant"
+            else:
+                continue
+            if messages and messages[-1]["role"] == role:
+                messages[-1]["content"] += "\n" + m.content
+            else:
+                messages.append({"role": role, "content": m.content})
         return messages
 
 

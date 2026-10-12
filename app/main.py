@@ -319,8 +319,43 @@ async def professor_ws(websocket: WebSocket):
 
     hb_task = asyncio.create_task(_heartbeat())
 
-    # Fix 1: guardamos el task de respuesta en curso para poder cancelarlo si el WS cierra
-    _active_response_task: asyncio.Task | None = None
+    # Control de ráfaga: tarea de espera pendiente y tarea de respuesta activa
+    _burst_task: asyncio.Task | None = None
+    _response_task: asyncio.Task | None = None
+
+    # Estado compartido entre el loop y las corutinas de ráfaga
+    _burst_cancel_event = asyncio.Event()   # señal: nuevo mensaje → cancelar respuesta en curso
+    _burst_count: list[int] = [0]           # contador de mensajes en la ráfaga actual
+
+    async def _launch_burst_response():
+        """
+        Espera burst_wait_seconds desde el último mensaje y luego lanza UNA respuesta.
+        Si llega un mensaje nuevo durante la espera, esta tarea se cancela y se relanza.
+        """
+        nonlocal _response_task
+        try:
+            await asyncio.sleep(config.timing.burst_wait_seconds)
+        except asyncio.CancelledError:
+            return
+
+        sess = session_manager.session
+        if sess is None or sess.state != SessionState.ACTIVE:
+            return
+
+        burst_size = _burst_count[0]
+        _burst_count[0] = 0
+
+        responder = sess.responder
+        if responder == "ia":
+            if session_manager.panel_ws:
+                await _send(session_manager.panel_ws, {"type": "ai_turn"})
+            _response_task = asyncio.create_task(
+                _respond_as_ai(websocket, sess, burst_size=burst_size)
+            )
+        else:
+            _response_task = asyncio.create_task(
+                _respond_as_human(websocket, sess, burst_size=burst_size)
+            )
 
     try:
         while True:
@@ -340,11 +375,43 @@ async def professor_ws(websocket: WebSocket):
 
             elif mtype == "message":
                 content = msg.get("content", "").strip()
-                # Fix 1: lanzar la lógica de respuesta como tarea independiente,
-                # de modo que el loop siga libre para recibir pongs y take_control.
-                _active_response_task = asyncio.create_task(
-                    _handle_professor_message(websocket, content)
-                )
+                if not content:
+                    continue
+
+                sess = session_manager.session
+                if sess is None or sess.state != SessionState.ACTIVE:
+                    await _send(websocket, {"type": "error", "message": "No hay sesión activa."})
+                    continue
+
+                # 1. Guardar en historial y reenviar al panel al instante
+                await session_manager.add_message("profesor", content)
+                if session_manager.panel_ws:
+                    await _send(session_manager.panel_ws, {
+                        "type": "message",
+                        "role": "profesor",
+                        "content": content,
+                    })
+                _burst_count[0] += 1
+
+                # 2. Si hay una respuesta en curso (IA generando, aún no entregada): cancelar
+                if _response_task is not None and not _response_task.done():
+                    _burst_cancel_event.set()
+                    _response_task.cancel()
+                    try:
+                        await _response_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    _response_task = None
+                    _burst_cancel_event.clear()
+
+                # 3. Reiniciar la espera de ráfaga
+                if _burst_task is not None and not _burst_task.done():
+                    _burst_task.cancel()
+                    try:
+                        await _burst_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                _burst_task = asyncio.create_task(_launch_burst_response())
 
             elif mtype == "vote":
                 await _handle_professor_vote(websocket, msg.get("answer", ""))
@@ -353,59 +420,37 @@ async def professor_ws(websocket: WebSocket):
         pass
     finally:
         hb_task.cancel()
-        # No cancelamos _active_response_task: si la IA está generando, queremos
+        if _burst_task is not None and not _burst_task.done():
+            _burst_task.cancel()
+        # No cancelamos _response_task: si la IA está generando, queremos
         # que termine y quede en el historial aunque el WS esté caído.
         print("[ws/profesor] Desconectado")
         session_manager.professor_ws = None
         await _notify_professor_status(False)
 
 
-async def _handle_professor_message(ws: WebSocket, content: str):
-    """Procesa un mensaje del profesor y genera la respuesta del interlocutor."""
-    sess = session_manager.session
-
-    if not content:
-        return
-
-    if sess is None or sess.state != SessionState.ACTIVE:
-        await _send(ws, {"type": "error", "message": "No hay sesión activa."})
-        return
-
-    # Guardar mensaje del profesor (sin source: viene del profesor)
-    await session_manager.add_message("profesor", content)
-
-    # Enviar mensaje al panel también (el cómplice ve la conversación completa)
-    if session_manager.panel_ws:
-        await _send(session_manager.panel_ws, {
-            "type": "message",
-            "role": "profesor",
-            "content": content,
-        })
-
-    # Decidir quién responde (con posible override de "tomar control")
-    responder = sess.responder
-
-    if responder == "ia":
-        # Avisar al panel que es turno de la IA (para mostrar botón "tomar control")
-        if session_manager.panel_ws:
-            await _send(session_manager.panel_ws, {"type": "ai_turn"})
-        await _respond_as_ai(ws, sess)
-    else:
-        await _respond_as_human(ws, sess)
-
-
-async def _respond_as_ai(ws: WebSocket, sess):
+async def _respond_as_ai(ws: WebSocket, sess, burst_size: int = 1):
     """
     Pide respuesta al modelo, aplica retrasos y la entrega al profesor.
     Permite que el cómplice tome el control durante la generación.
+
+    Ráfaga: si llega un nuevo mensaje del profesor mientras se genera, esta tarea
+    será cancelada desde el loop del WS. El try/finally asegura que los recursos
+    (deliver_human_response, typing indicator, model_busy) se restauren siempre.
 
     Fix 1: corre como tarea independiente → el WS sigue libre para pong/take_control.
     Fix 4: el takeover funciona en cualquier momento, incluso tras timeout del modelo.
     Fix 7: notifica al panel cuando el modelo está ocupado.
     """
+    original_deliver = session_manager.deliver_human_response
+    ai_task: asyncio.Task | None = None
+
     # Pausa de lectura
     read_wait = reading_delay()
-    await asyncio.sleep(read_wait)
+    try:
+        await asyncio.sleep(read_wait)
+    except asyncio.CancelledError:
+        return
 
     # Indicador de escritura
     await _send(ws, {"type": "typing", "state": True})
@@ -415,117 +460,127 @@ async def _respond_as_ai(ws: WebSocket, sess):
     # Fix 7: indicar al panel que el modelo está ocupado
     await _set_model_busy(True)
 
-    # Lanzar inferencia y espera de take_control en paralelo
-    history = session_manager.get_history_for_rkllm()
+    try:
+        # Lanzar inferencia y espera de take_control en paralelo
+        history = session_manager.get_history_for_rkllm()
 
-    t0 = time.monotonic()
+        t0 = time.monotonic()
 
-    # Reiniciar el evento directo de takeover antes de lanzar la inferencia
-    session_manager._takeover_event.clear()
-    session_manager._takeover_text = None
+        # Reiniciar el evento directo de takeover antes de lanzar la inferencia
+        session_manager._takeover_event.clear()
+        session_manager._takeover_text = None
 
-    # Fix 4: evento de respaldo via parche de deliver_human_response
-    take_control_event = asyncio.Event()
-    _pending_takeover: list[str] = []
+        # Fix 4: evento de respaldo via parche de deliver_human_response
+        take_control_event = asyncio.Event()
+        _pending_takeover: list[str] = []
 
-    original_deliver = session_manager.deliver_human_response
+        async def patched_deliver(text: str):
+            _pending_takeover.append(text)
+            take_control_event.set()
+            await original_deliver(text)
 
-    async def patched_deliver(text: str):
-        _pending_takeover.append(text)
-        take_control_event.set()
-        await original_deliver(text)
+        session_manager.deliver_human_response = patched_deliver
 
-    session_manager.deliver_human_response = patched_deliver
+        # Inferencia en background
+        ai_task = asyncio.create_task(
+            rkllm_client.chat(history, system_prompt=config.system_prompt)
+        )
 
-    # Inferencia en background
-    ai_task = asyncio.create_task(
-        rkllm_client.chat(history, system_prompt=config.system_prompt)
-    )
+        # Espera directa del evento de takeover (mecanismo principal)
+        async def wait_takeover_direct():
+            await session_manager._takeover_event.wait()
 
-    # Espera directa del evento de takeover (mecanismo principal)
-    async def wait_takeover_direct():
-        await session_manager._takeover_event.wait()
+        done, _ = await asyncio.wait(
+            [
+                ai_task,
+                asyncio.create_task(take_control_event.wait()),
+                asyncio.create_task(wait_takeover_direct()),
+            ],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
 
-    done, _ = await asyncio.wait(
-        [
-            ai_task,
-            asyncio.create_task(take_control_event.wait()),
-            asyncio.create_task(wait_takeover_direct()),
-        ],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
+        # Comprobar takeover por cualquiera de las dos vías
+        takeover_text = None
+        if session_manager._takeover_event.is_set() and session_manager._takeover_text:
+            takeover_text = session_manager._takeover_text
+            print(f"[respond_as_ai] Takeover directo detectado: {takeover_text!r}")
+        elif take_control_event.is_set() and _pending_takeover:
+            takeover_text = _pending_takeover[0]
+            print(f"[respond_as_ai] Takeover via parche detectado: {takeover_text!r}")
 
-    # Restaurar función original
-    session_manager.deliver_human_response = original_deliver
+        if takeover_text is not None:
+            # Fix 4: El cómplice tomó el control.
+            # Cancelar la tarea de IA si todavía está corriendo.
+            if not ai_task.done():
+                ai_task.cancel()
+                try:
+                    await ai_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
-    # Fix 7: modelo ya no está ocupado (ya sea porque terminó o porque se canceló)
-    await _set_model_busy(False)
+            elapsed = time.monotonic() - t0
+            extra = human_response_delay(takeover_text, elapsed)
+            if extra > 0:
+                await asyncio.sleep(extra)
+            # A1: source=takeover (el evento ya fue registrado en take_control)
+            await _deliver_response(ws, takeover_text, sess, source="takeover",
+                                    delay_applied_s=extra, burst_size=burst_size)
+            return
 
-    # Comprobar takeover por cualquiera de las dos vías
-    takeover_text = None
-    if session_manager._takeover_event.is_set() and session_manager._takeover_text:
-        takeover_text = session_manager._takeover_text
-        print(f"[respond_as_ai] Takeover directo detectado: {takeover_text!r}")
-    elif take_control_event.is_set() and _pending_takeover:
-        takeover_text = _pending_takeover[0]
-        print(f"[respond_as_ai] Takeover via parche detectado: {takeover_text!r}")
+        # Obtener resultado de la IA
+        if ai_task.cancelled():
+            result = (None, 0.0)
+        else:
+            try:
+                result = ai_task.result()
+            except Exception:
+                result = (None, 0.0)
+        if result is None:
+            result = (None, 0.0)
+        ai_text, model_elapsed = result
 
-    if takeover_text is not None:
-        # Fix 4: El cómplice tomó el control.
-        # Cancelar la tarea de IA si todavía está corriendo.
-        if not ai_task.done():
+        if ai_text is None:
+            # A1: registrar evento de error de modelo
+            if sess:
+                sess.add_event("error_modelo")
+            # Apagar "escribiendo..." en ambos lados
+            await _send_typing_off()
+            if session_manager.panel_ws:
+                await _send(session_manager.panel_ws, {
+                    "type": "error",
+                    "message": "El modelo no respondió. Puedes tomar el control.",
+                })
+            # Fix 6: habilitar el input del profesor para que no quede bloqueado
+            await _send(session_manager.professor_ws, {"type": "input_enabled"})
+            return
+
+        # Retraso adicional para simular escritura (descontando tiempo del modelo)
+        extra = ai_response_delay(ai_text, model_elapsed + read_wait)
+        if extra > 0:
+            await asyncio.sleep(extra)
+
+        # A1: source=ia, latencia del modelo y retraso aplicado
+        await _deliver_response(ws, ai_text, sess, source="ia",
+                                model_latency_s=model_elapsed, delay_applied_s=extra,
+                                burst_size=burst_size)
+
+    except asyncio.CancelledError:
+        # Nuevo mensaje llegó durante la generación: cancelar inferencia, limpiar indicadores
+        if ai_task is not None and not ai_task.done():
             ai_task.cancel()
             try:
                 await ai_task
             except (asyncio.CancelledError, Exception):
                 pass
-
-        elapsed = time.monotonic() - t0
-        extra = human_response_delay(takeover_text, elapsed)
-        if extra > 0:
-            await asyncio.sleep(extra)
-        # A1: source=takeover (el evento ya fue registrado en take_control)
-        await _deliver_response(ws, takeover_text, sess, source="takeover", delay_applied_s=extra)
-        return
-
-    # Obtener resultado de la IA
-    if ai_task.cancelled():
-        result = (None, 0.0)
-    else:
-        try:
-            result = ai_task.result()
-        except Exception:
-            result = (None, 0.0)
-    if result is None:
-        result = (None, 0.0)
-    ai_text, model_elapsed = result
-
-    if ai_text is None:
-        # A1: registrar evento de error de modelo
-        if sess:
-            sess.add_event("error_modelo")
-        # Apagar "escribiendo..." en ambos lados
         await _send_typing_off()
-        if session_manager.panel_ws:
-            await _send(session_manager.panel_ws, {
-                "type": "error",
-                "message": "El modelo no respondió. Puedes tomar el control.",
-            })
-        # Fix 6: habilitar el input del profesor para que no quede bloqueado
-        await _send(session_manager.professor_ws, {"type": "input_enabled"})
-        return
-
-    # Retraso adicional para simular escritura (descontando tiempo del modelo)
-    extra = ai_response_delay(ai_text, model_elapsed + read_wait)
-    if extra > 0:
-        await asyncio.sleep(extra)
-
-    # A1: source=ia, latencia del modelo y retraso aplicado
-    await _deliver_response(ws, ai_text, sess, source="ia",
-                            model_latency_s=model_elapsed, delay_applied_s=extra)
+        print("[respond_as_ai] Cancelado por nueva ráfaga")
+        raise
+    finally:
+        session_manager.deliver_human_response = original_deliver
+        await _set_model_busy(False)
 
 
-async def _respond_as_human(ws: WebSocket, sess):
+async def _respond_as_human(ws: WebSocket, sess, burst_size: int = 1):
     """
     Espera la respuesta del cómplice, aplica retrasos mínimos y la entrega.
 
@@ -535,6 +590,9 @@ async def _respond_as_human(ws: WebSocket, sess):
                           y luego entrega un mensaje genérico (nunca silencio ni error
                           visible para el profesor).
     En ambos casos se avisa al cómplice en el panel.
+
+    Ráfaga: se notifica al cómplice UNA sola vez por ráfaga.
+    Mensajes nuevos que llegan durante la espera solo añaden al historial; no re-notifican.
     """
     if session_manager.panel_ws:
         await _send(session_manager.panel_ws, {
@@ -543,7 +601,13 @@ async def _respond_as_human(ws: WebSocket, sess):
         })
 
     t0 = time.monotonic()
-    human_text = await session_manager.request_human_response()
+    try:
+        human_text = await session_manager.request_human_response()
+    except asyncio.CancelledError:
+        # Nuevo mensaje durante la espera del cómplice: limpiar y propagar
+        await _send_typing_off()
+        print("[respond_as_human] Cancelado por nueva ráfaga")
+        raise
     elapsed = time.monotonic() - t0
 
     if human_text is None:
@@ -591,7 +655,8 @@ async def _respond_as_human(ws: WebSocket, sess):
             await _deliver_response(ws, ai_text, sess,
                                     source="ia_fallback",
                                     model_latency_s=model_elapsed,
-                                    delay_applied_s=extra)
+                                    delay_applied_s=extra,
+                                    burst_size=burst_size)
         else:
             # fallback="none": mantener "escribiendo..." y entregar mensaje genérico
             await _send(ws, {"type": "typing", "state": True})
@@ -608,7 +673,8 @@ async def _respond_as_human(ws: WebSocket, sess):
                 sess.add_event("ia_fallback")
             await _deliver_response(ws, generic_msg, sess,
                                     source="ia_fallback",
-                                    delay_applied_s=extra_wait)
+                                    delay_applied_s=extra_wait,
+                                    burst_size=burst_size)
         return
 
     # --- Camino normal: el cómplice respondió a tiempo ---
@@ -626,7 +692,8 @@ async def _respond_as_human(ws: WebSocket, sess):
         await asyncio.sleep(extra)
 
     # A1: source=humano, retraso aplicado
-    await _deliver_response(ws, human_text, sess, source="humano", delay_applied_s=extra)
+    await _deliver_response(ws, human_text, sess, source="humano", delay_applied_s=extra,
+                            burst_size=burst_size)
 
 
 async def _send_typing_off():
@@ -644,6 +711,7 @@ async def _deliver_response(
     source: str = "ia",
     model_latency_s: float | None = None,
     delay_applied_s: float | None = None,
+    burst_size: int = 1,
 ):
     """
     Apaga el indicador de escritura y entrega el mensaje al profesor.
@@ -655,6 +723,7 @@ async def _deliver_response(
 
     Para source "ia" e "ia_fallback" aplica limpiar_respuesta() si está habilitado.
     El texto original se guarda como text_raw en el historial; el filtrado como content.
+    burst_size: cuántos mensajes del profesor componen la ráfaga respondida.
     """
     await _send_typing_off()
 
@@ -675,12 +744,17 @@ async def _deliver_response(
         text_raw=text_raw,
     )
 
-    # Enviar al profesor
+    # Enviar al profesor (incluye burst_size para debugging/logging del cliente)
     prof_ws = session_manager.professor_ws
     delivered = False
     if prof_ws is not None:
         try:
-            await prof_ws.send_json({"type": "message", "role": "interlocutor", "content": text})
+            await prof_ws.send_json({
+                "type": "message",
+                "role": "interlocutor",
+                "content": text,
+                "burst_size": burst_size,
+            })
             delivered = True
         except Exception:
             delivered = False
