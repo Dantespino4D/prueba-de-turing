@@ -71,6 +71,7 @@ class Message:
     delay_applied_s: Optional[float] = None
     # Texto original del modelo antes del filtro (solo para source ia/ia_fallback)
     text_raw: Optional[str] = None
+    burst_size: Optional[int] = None
 
 
 @dataclass
@@ -150,6 +151,7 @@ class SessionData:
                     **({"model_latency_s": round(m.model_latency_s, 3)} if m.model_latency_s is not None else {}),
                     **({"delay_applied_s": round(m.delay_applied_s, 3)} if m.delay_applied_s is not None else {}),
                     **({"text_raw": m.text_raw} if m.text_raw is not None else {}),
+                    **({"burst_size": m.burst_size} if m.burst_size is not None else {}),
                 }
                 for m in self.history
             ],
@@ -241,6 +243,7 @@ class SessionManager:
         model_latency_s: Optional[float] = None,
         delay_applied_s: Optional[float] = None,
         text_raw: Optional[str] = None,
+        burst_size: Optional[int] = None,
     ) -> Message:
         async with self._lock:
             msg = Message(
@@ -250,6 +253,7 @@ class SessionManager:
                 model_latency_s=model_latency_s,
                 delay_applied_s=delay_applied_s,
                 text_raw=text_raw,
+                burst_size=burst_size,
             )
             if self._session:
                 self._session.history.append(msg)

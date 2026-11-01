@@ -742,6 +742,7 @@ async def _deliver_response(
         model_latency_s=model_latency_s,
         delay_applied_s=delay_applied_s,
         text_raw=text_raw,
+        burst_size=burst_size,
     )
 
     # Enviar al profesor (incluye burst_size para debugging/logging del cliente)

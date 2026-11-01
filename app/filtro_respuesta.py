@@ -33,8 +33,36 @@ def quitar_tildes(s: str) -> str:
     return unicodedata.normalize("NFC", s)
 
 
+# --- Risas con variacion y errores de dedo -----------------------------------------
+# La "s" queda junto a la "a" en el teclado, asi que mucha gente escribe "jsjs" o "jajsjs".
+# Se sortea cada vez: cuantas veces se repite, cuantas letras salen mal y en que posicion.
+def _risa_con_error(rng):
+    unidades = rng.choice([2, 2, 3, 3, 3, 4])
+    vocales = ["a" if rng.random() < 0.5 else "s"]            # la primera unidad puede ser "ja" o "js"
+    vocales += ["s" if rng.random() < 0.55 else "a" for _ in range(unidades - 1)]
+    if "s" not in vocales:                                    # que de verdad lleve al menos un error
+        vocales[rng.randrange(unidades)] = "s"
+    risa = "".join("j" + v for v in vocales)
+    if rng.random() < 0.25:                                   # a veces queda cortada: "jajsj"
+        risa += "j"
+    return risa
+
+
+def _risa_limpia(rng):
+    return "ja" * rng.choice([2, 2, 3, 3, 4]) + ("j" if rng.random() < 0.15 else "")
+
+
+def variar_risas(texto, prob_error=0.5, rng=random):
+    """Reemplaza cada "jaja..." por una risa de longitud aleatoria; con probabilidad
+    prob_error lleva errores de dedo (jsjs, jajsjs, jsjaj...)."""
+    def rep(m):
+        return _risa_con_error(rng) if rng.random() < prob_error else _risa_limpia(rng)
+    return re.sub(r"(?<![a-zñ])(?:ja){2,}j?(?![a-zñ])", rep, texto, flags=re.IGNORECASE)
+
+
 def limpiar_respuesta(texto: str, max_words: int = 18, minusculas: bool = True,
-                      max_palabras: int = None) -> str:
+                      max_palabras: int = None, prob_risas: float = 0.5) -> str:
+    # prob_risas: probabilidad de que una risa lleve errores de dedo; None = no tocar las risas.
     # max_words es el nombre que usa app/main.py; max_palabras se acepta como alias.
     if max_palabras is not None:
         max_words = max_palabras
@@ -85,6 +113,8 @@ def limpiar_respuesta(texto: str, max_words: int = 18, minusculas: bool = True,
 
     out = " ".join(elegidas)
     out = quitar_tildes(out)
+    if prob_risas is not None:
+        out = variar_risas(out, prob_risas)
     out = re.sub(r"\.+\s*$", "", out)      # sin punto final (ni puntos suspensivos)
     out = re.sub(r"\s+", " ", out).strip()
     return out.lower() if minusculas else out
